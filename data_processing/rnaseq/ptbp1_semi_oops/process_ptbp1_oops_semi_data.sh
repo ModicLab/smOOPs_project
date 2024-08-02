@@ -13,9 +13,10 @@ REFDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/genomes/gencode_M27
 
 ## LOAD REQUIRED MODULES
 ml purge
-ml Nextflow/21.10.3
+ml Java/11.0.2
+ml Nextflow/22.10.3
 ml Singularity/3.6.4
-ml Graphviz/2.38.0-foss-2016b
+ml Graphviz/2.47.2-GCCcore-10.3.0
 
 export NXF_SINGULARITY_CACHEDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/nfcore/rnaseq/singularity
 export NXF_HOME=/nemo/lab/ulej/home/users/luscomben/users/iosubi/.nextflow
