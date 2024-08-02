@@ -1,0 +1,9 @@
+sample,fastq
+naive_1,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/NaiveG9_1_S87.merged.fastq.gz
+naive_2,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/NaiveG9_2_S88.merged.fastq.gz
+naive_3,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/NaiveG9_3_S89.merged.fastq.gz
+epi_1,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/EpiG9_1_S90.merged.fastq.gz
+epi_2,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/EpiG9_2_S91.merged.fastq.gz
+epi_3,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/EpiG9_3_S92.merged.fastq.gz
+input_1,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/Input_NaiveG9_1_S93.merged.fastq.gz
+input_2,/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/20230418_naive_epi/trimmed/Input_NaiveG9_2_S94.merged.fastq.gz
