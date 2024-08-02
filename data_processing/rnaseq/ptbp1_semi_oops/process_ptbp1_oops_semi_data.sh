@@ -12,7 +12,7 @@
 # Because this version doesn't support UMI extraction from R2, we extracted the UMIs in advance using umi_extract_sbatch.sh
 
 WORKDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/ptbp1
-REFDIR=/camp/lab/ulej/home/users/luscomben/home/users/iosubi/genomes/gencode_M27
+REFDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/genomes/gencode_M27
 
 ## LOAD REQUIRED MODULES
 ml purge
@@ -20,7 +20,7 @@ ml Nextflow/21.10.3
 ml Singularity/3.6.4
 ml Graphviz/2.38.0-foss-2016b
 
-export NXF_SINGULARITY_CACHEDIR=/camp/lab/ulej/home/users/luscomben/home/users/iosubi/nfcore/rnaseq/singularity
+export NXF_SINGULARITY_CACHEDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/nfcore/rnaseq/singularity
 export NXF_HOME=/nemo/lab/ulej/home/users/luscomben/users/iosubi/.nextflow
 
 cd $WORKDIR
