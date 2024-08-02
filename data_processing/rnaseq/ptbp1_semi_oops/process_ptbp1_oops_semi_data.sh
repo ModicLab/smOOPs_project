@@ -8,9 +8,6 @@
 # Processing of PTBP1 depletion time-course in cells at Naive stage, in control (normal trizol) RNA-seq, OOPS and semi-extractibility assay.
 # Author: Ira A Iosub
 
-# For consistency in processing, nf-core/rnaseq 3.4 will be used to process the data
-# Because this version doesn't support UMI extraction from R2, we extracted the UMIs in advance using umi_extract_sbatch.sh
-
 WORKDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/projects/miha_tajda/ptbp1
 REFDIR=/camp/lab/ulej/home/users/luscomben/users/iosubi/genomes/gencode_M27
 
@@ -30,10 +27,10 @@ cd $WORKDIR
 # ==========
 
 ## UPDATE PIPELINE
-nextflow pull nf-core/rnaseq -r 3.4
+nextflow pull nf-core/rnaseq -r 3.10
 
 ## RUN PIPELINE
-nextflow run nf-core/rnaseq -r 3.4 \
+nextflow run nf-core/rnaseq -r 3.10 \
 --input samplesheet.csv \
 --outdir $WORKDIR/results_ptbp1_smoops \
 --fasta $REFDIR/GRCm39.primary_assembly.genome.fa.gz \
@@ -41,6 +38,8 @@ nextflow run nf-core/rnaseq -r 3.4 \
 --gencode \
 --aligner star_salmon \
 --with_umi \
+--umitools_bc_pattern NNNNN \
+--umitools_bc_pattern2 NNNNN \
 --clip_r1 2 \
 --clip_r2 2 \
 --pseudo_aligner salmon \
