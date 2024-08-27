@@ -1,0 +1,586 @@
+---
+title: "Analyses of mESCs transcriptome-wide datasets: OOPS, semi-extractibility assay and RNA-seq"
+author: "Ira Iosub"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_notebook:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+    highlight: monochrome
+    df_print: paged
+    code_folding: hide
+  html_document:
+    toc: yes
+    toc_depth: '3'
+    df_print: paged
+---
+
+#### Libraries
+
+```{r include=FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(tidyverse, warn.conflicts = FALSE))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(DESeq2))
+# suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(cowplot))
+# suppressPackageStartupMessages(library(RColorBrewer))
+# suppressPackageStartupMessages(library(org.Mm.eg.db))
+# suppressPackageStartupMessages(library(clusterProfiler))
+suppressPackageStartupMessages(library(UpSetR))
+suppressPackageStartupMessages(library(GenomicFeatures))
+
+theme_set(theme_cowplot() +
+            theme(legend.position = "top"))
+```
+
+#### Functions
+
+```{r}
+#' Plot smOOPs Scatter Plot
+#'
+#' This function generates a scatter plot comparing the log2 fold changes of semi-extractable RNA and OOPS RNA for a specific developmental stage. The function identifies and classifies smOOPs transcripts based on user-defined thresholds for adjusted p-value and log2 fold change. It also computes and displays the Pearson correlation between the semi-extractable and OOPS log2 fold changes.
+#'
+#' @param semi_stage.ashr A data frame containing differential expression results (including `padj` and `log2FoldChange`) from the semi-extractability assay for the selected stage.
+#' @param oops_stage.ashr A data frame containing differential expression results (including `padj` and `log2FoldChange`) from the OOPS assay for the selected stage.
+#' @param stage A character string indicating the developmental stage, used for labeling and classification (e.g., "naive", "epi", "diff").
+#' @param max_padj A numeric value specifying the adjusted p-value threshold to classify transcripts as significant. Default is 0.01.
+#' @param min_lfc A numeric value specifying the minimum log2 fold change threshold to classify transcripts as enriched. Default is 1.
+#'
+#' @return A list containing:
+#'   \item{data}{The data frame used for plotting, including the classifications of smOOPs and non-smOOPs.}
+#'   \item{plot}{The ggplot object visualizing the scatter plot with correlation annotation.}
+#'
+#' @details The function filters transcripts based on the specified `padj` and `log2FoldChange` thresholds from both the semi-extractability and OOPS assays. Transcripts meeting these criteria are classified as smOOPs for the given stage. The plot includes color-coded classifications, with dashed lines indicating the log2 fold change thresholds. The Pearson correlation coefficient is also displayed on the plot.
+#'
+#' @examples
+#' # Example usage:
+#' plot_smoops_scatter(semi_data, oops_data, "naive")
+#'
+plot_smoops_scatter <- function(semi_stage.ashr, oops_stage.ashr, stage, max_padj = 0.01, min_lfc = 1) {
+
+  stage_lfc.df <- left_join(data.frame(semi_stage.ashr) %>%
+                            rownames_to_column(var = "gene_id") %>%
+                              dplyr::select(gene_id, padj, log2FoldChange) %>%
+                            dplyr::filter(padj < max_padj & log2FoldChange > 0),
+                            data.frame(oops_stage.ashr) %>%
+                            rownames_to_column(var = "gene_id") %>%
+                              dplyr::select(gene_id, padj, log2FoldChange) %>%
+                            dplyr::filter(padj < max_padj & log2FoldChange > 0),
+                            by = "gene_id", suffix = c("_semi", "_oops")) %>%
+  dplyr::filter(!is.na(log2FoldChange_semi)) %>%
+  dplyr::filter(!is.na(log2FoldChange_oops))
+
+  # Create a new column to classify points
+  stage_lfc.df$classification <- ifelse(
+    stage_lfc.df$padj_semi < max_padj & stage_lfc.df$padj_oops < max_padj &
+    abs(stage_lfc.df$log2FoldChange_semi) > min_lfc & abs(stage_lfc.df$log2FoldChange_oops) > min_lfc,
+    paste0(stage," smOOPs"), "non-smOOPs"
+  )
+
+
+  # Get the number of smOOPs
+  stage_smoops_counts = nrow(stage_lfc.df %>% dplyr::filter(classification == paste0(stage," smOOPs")))
+
+  # Add the count
+
+
+  # Plot
+  stage.base_plot.gg <- ggplot(stage_lfc.df, aes(x = log2FoldChange_semi, y = log2FoldChange_oops, color = classification)) +
+    geom_point(alpha = 0.2, stroke = 1) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
+    # geom_text_repel(data = subset(stage_lfc.df, log2FoldChange_semi > 4.5 | log2FoldChange_oops > 4.5),
+    #                 aes(label = gene_id), size = 2.5, max.overlaps = 10) +
+    labs(# title = "Naive smOOPS LFC Correlation",
+         x = "Log2 Fold Change (Semi-extractibility vs Control)",
+         y = "Log2 Fold Change (OOPS vs Control)") +
+    theme_cowplot() +
+    # ggtitle("naive lfc corr") +
+    # stat_cor(method = "pearson", label.x = 0.1, label.y = 5, size = 4) +
+    # scale_color_manual(values = c("naive smOOPs" = "#4682B4", "nonsmOOPS" = "grey30"), name = NULL)
+    scale_color_manual(values = c("naive smOOPs" = "#4682B4",
+                                  "epi smOOPs" = "#008080",
+                                  "diff smOOPs" = "#894c89",
+                                  "nonsmOOPs" = "grey30"),
+                       labels = paste0(stage," smOOPs (n = ", stage_smoops_counts, ")")) +
+    theme(axis.text.x = element_text(angle = 0, hjust = 1),
+        legend.title = element_blank())
+    # stat_cor(method = "pearson", label.x = 0.1, label.y = 5, size = 3, aes(group = 1)) # Add Pearson correlation coefficient
+
+  # Add Pearson correlation coefficient separately
+  cor_result <- cor.test(stage_lfc.df$log2FoldChange_semi, stage_lfc.df$log2FoldChange_oops)
+  cor_label <- paste("R =", round(cor_result$estimate, 2), ", p <", format(cor_result$p.value, digits = 2, scientific = TRUE))
+
+  # Combine the base plot and the correlation label
+  stage.final_plot.gg <- stage.base_plot.gg +
+    annotate("text", x = 0.1, y = 5, label = cor_label, size = 3, hjust = 0) +
+    guides(color = guide_legend(override.aes = list(size = 3)))
+
+  return(list(data = stage.final_plot.gg, plot = stage.final_plot.gg))
+
+}
+
+
+# if SSL connection problems
+# BiocManager::install("GenomicFeatures", force = T)
+make_txdb <- function(gtf, org) {
+
+  # Get name of db
+  name <- paste0(str_split(gtf, ".gtf")[[1]][1], ".sqlite")
+
+  if (file.exists(name)) {
+
+    TxDb <- loadDb(name)
+
+  } else {
+
+    TxDb <- makeTxDbFromGFF(gtf, format="gtf",
+                            organism = org) # chrominfo = seqinfo(TxDb.Hsapiens.UCSC.hg38.knownGene
+
+    saveDb(TxDb, file=name)
+    # TxDb <- loadDb(name)
+  }
+
+  TxDb <- keepStandardChromosomes(TxDb, pruning.mode="coarse")
+  return(TxDb)
+}
+
+
+plot_stacked_barchart <- function(data.df, column, group=NULL, simplify=TRUE) {
+
+  if (!("id" %in% colnames(data.df))) {
+    data.df$id <- data.df$gene_id
+
+  } else {
+    #next
+    data.df$id <- data.df$id
+  }
+
+  data_counts.df <- data.df %>%
+    dplyr::select(id, {{group}}, {{column}}) %>%
+    distinct() %>%
+    group_by({{group}}, {{column}}) %>%
+    summarise(counts = n()) %>%
+    arrange(desc({{column}})) %>%
+    mutate(percentage = scales::percent(counts / sum(counts), accuracy = 0.01)) %>%
+    mutate(percentage = as.numeric(sub("%","", percentage))) %>%
+    ungroup() %>%
+    group_by({{group}}) %>%
+    #mutate(percentage = counts*100 / sum(counts)) %>%
+    mutate(pos = cumsum(percentage) - percentage/2)
+
+
+  if (simplify) {
+    data_counts.df <- data_counts.df %>%
+      mutate(category = case_when((percentage <= 1) ~ "Other",
+                                  (percentage > 1) ~ {{column}}))
+
+    data_counts.df <- data_counts.df %>%
+      group_by({{group}}, category) %>%
+      mutate(percentage = sum(percentage)) %>%
+      ungroup() %>%
+      dplyr::select(category, percentage, {{group}}) %>%
+      distinct() %>%
+      arrange(desc(category)) %>%
+      group_by({{group}}) %>%
+      mutate(pos = cumsum(percentage) - percentage/2) 
+
+  } else {
+
+    data_counts.df <- data_counts.df %>%
+      mutate(category = {{column}})
+  }
+
+  bar = ggplot() +
+    geom_bar(aes(y = percentage, x = {{group}}, fill = category), data = data_counts.df,
+             stat="identity", width = 0.5) +  # color="black"
+    ggrepel::geom_text_repel(data = data_counts.df, aes(x = {{group}}, y = pos, label=paste0(round(percentage, 1),"%")), size = 3, nudge_x = 0.4,
+                             segment.size = 0.5, segment.color = '#515A5A') + # label=paste0(round(percentage, 2),"%"))
+    #facet_grid(cols = vars({{group}})) +
+    paletteer::scale_fill_paletteer_d("rcartocolor::Earth", direction = -1) +
+    # scale_fill_manual(values = "#5b859e","#1e395f","#75884b","#1e5a46","#df8d71","#af4f2f","#d48f90","#732f30","#ab84a5","#59385c","#d8b847","#b38711") + #metbrewer Redon
+    theme(legend.position="bottom", legend.direction="horizontal",
+          legend.title = element_blank()) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+    ylab("Percentage") + xlab("") +
+    theme_cowplot()
+
+  return(bar)
+
+}
+
+```
+
+
+# OOPS and semi-extractibility data
+
+Contains analyses of RNA-seq data from a semi-extractibility assay and OOPS experiments performed by Tajda (Ule lab).
+Done in triplicates and three conditions: 
+
+*	Naïve mESC (Naïve)
+*	primed puripotency (EpiSC)
+*	1 day upon exit of pluripotency (Diff/T)
+
+* Normal = normal trizol extraction
+* Semi = semi-extractibility assay data (heating and shearing before trizol extraction to obtain semi-extractable RNAs)
+* OOPS = OOPS
+
+
+Set paths and color scheme for results
+
+```{r}
+base.results.dir <- "~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/"
+figures.dir <- paste0(base.results.dir, "figures/")
+```
+
+
+```{r}
+# smoops_colors = c("naive" = "#4682B4", "epi" = "#008080", diff = "#894c89")
+# control_colors = c("naive" = "#4682B433", "epi" = "#00808033", diff = "#894C8933")
+
+smoops_values = c("naive" = "#4682B4", "epi" = "#008080", diff = "#894c89")
+control_values = c("naive" = "#bdcae2", "epi" = "#b1c7c9", diff = "#cdb7d1")
+```
+
+
+The starting point for the analyses were **STAR-salmon** raw count output from analyses ran using nf-core rnaseq v3.4 pipeline
+
+```{r}
+# DGE
+data.df <- fread(paste0(base.results.dir, "deseq2_smoops/salmon_count_tables/salmon.merged.gene_counts_length_scaled.tsv"))
+
+# Create metadata
+data.df <- data.df %>%
+  remove_rownames %>%
+  column_to_rownames(var = "gene_id") %>%
+  dplyr::select(-gene_name)
+
+sample.ls <- colnames(data.df)
+condition.ls <- unlist(lapply(sample.ls, function(x) str_split(x, "_")[[1]][1]))
+stage.ls <- unlist(lapply(sample.ls, function(x) str_split(x, "_")[[1]][2]))
+
+meta.df <- data.table(sample = sample.ls, condition = condition.ls, stage = stage.ls) %>%
+  group_by(condition) %>%
+  dplyr::arrange(desc(stage)) %>%
+  dplyr::arrange(condition) %>%
+  remove_rownames %>%
+  column_to_rownames(var = "sample")
+
+data.df <- dplyr::select(data.df, row.names(meta.df))
+stopifnot(colnames(data.df) == rownames(meta.df))
+
+meta.df$condition <- as.factor(meta.df$condition)
+meta.df$stage <- as.factor(meta.df$stage)
+```
+
+# DESeq2 to obtain smOOPs using combined groups
+
+Set thresholds for effect size and significance:
+
+```{r}
+min_lfc <- 1
+max_padj <- 0.01
+```
+
+
+```{r}
+# Ensure correct reference levels
+meta.df$stage <- relevel(meta.df$stage, ref = "naive")
+meta.df$condition <- relevel(meta.df$condition, ref = "control")
+
+# Combine factors into a single group
+meta.df$group <- factor(paste0(meta.df$condition, "_", meta.df$stage))
+
+# Create the DESeqDataSet with the group factor
+dds <- DESeqDataSetFromMatrix(countData = round(data.df), colData = meta.df,
+                              design = ~ group)
+
+# Filter so we keep genes with min 10 counts in at least 6 samples
+dds <- estimateSizeFactors(dds)
+idx <- rowSums(counts(dds, normalized = TRUE) >= 10) >= 6
+dds <- dds[idx,]
+
+# Run DESeq2
+dds <- DESeq(dds)
+
+# List available results names to confirm that the desired contrast is included
+resultsNames(dds)
+```
+
+
+## DESeq2 results for smOOPs
+
+```{r}
+# naive 
+res_semi_naive_vs_control_naive <- results(dds, contrast = c("group", "semi_naive", "control_naive"))
+res_oops_naive_vs_control_naive <- results(dds, contrast = c("group", "oops_naive", "control_naive"))
+# epi
+res_semi_epi_vs_control_epi <- results(dds, contrast = c("group", "semi_epiSC", "control_epiSC"))
+res_oops_epi_vs_control_epi <- results(dds, contrast = c("group", "oops_epiSC", "control_epiSC"))
+# diff
+res_semi_diff_vs_control_diff <- results(dds, contrast = c("group", "semi_diff", "control_diff"))
+res_oops_diff_vs_control_diff <- results(dds, contrast = c("group", "oops_diff", "control_diff"))
+```
+
+LFC shrinkage
+
+```{r warning=FALSE}
+# naive
+semi_naive.ashr <- lfcShrink(dds, type="ashr",contrast = c("group", "semi_naive", "control_naive"),
+                        res = res_semi_naive_vs_control_naive)
+
+oops_naive.ashr <- lfcShrink(dds, type="ashr",contrast = c("group", "oops_naive", "control_naive"),
+                        res = res_oops_naive_vs_control_naive)
+
+# epi
+semi_epi.ashr <- lfcShrink(dds, type="ashr",contrast = c("group", "semi_epi", "control_epi"),
+                        res = res_semi_epi_vs_control_epi)
+
+oops_epi.ashr <- lfcShrink(dds, type="ashr",contrast = c("group", "oops_epi", "control_epi"),
+                        res = res_oops_epi_vs_control_epi)
+
+
+# diff
+semi_diff.ashr <- lfcShrink(dds, type="ashr",contrast = c("group", "semi_diff", "control_diff"),
+                        res = res_semi_diff_vs_control_diff)
+
+oops_diff.ashr <- lfcShrink(dds, type="ashr",contrast = c("group", "oops_diff", "control_diff"),
+                        res = res_oops_diff_vs_control_diff)
+```
+
+Get significant genes semi vs control and oops vs control
+
+```{r}
+# naive
+sig_res_semi_naive_vs_control_naive.df <- data.frame(semi_naive.ashr) %>%
+  dplyr::filter(padj < max_padj & log2FoldChange > min_lfc) %>% rownames_to_column(var = "gene_id")
+
+sig_res_oops_naive_vs_control_naive.df <- data.frame(oops_naive.ashr) %>%
+  dplyr::filter(padj < max_padj & log2FoldChange > min_lfc) %>% rownames_to_column(var = "gene_id")
+
+# epi
+sig_res_semi_epi_vs_control_epi.df <- data.frame(semi_epi.ashr) %>%
+  dplyr::filter(padj < max_padj & log2FoldChange > min_lfc) %>% rownames_to_column(var = "gene_id")
+
+sig_res_oops_epi_vs_control_epi.df <- data.frame(oops_epi.ashr) %>%
+  dplyr::filter(padj < max_padj & log2FoldChange > min_lfc) %>% rownames_to_column(var = "gene_id")
+
+# diff
+sig_res_semi_diff_vs_control_diff.df <- data.frame(semi_diff.ashr) %>%
+  dplyr::filter(padj < max_padj & log2FoldChange > min_lfc) %>% rownames_to_column(var = "gene_id")
+
+sig_res_oops_diff_vs_control_diff.df <- data.frame(oops_diff.ashr) %>%
+  dplyr::filter(padj < max_padj & log2FoldChange > min_lfc) %>% rownames_to_column(var = "gene_id")
+
+```
+
+
+Save files:
+
+```{r}
+# fwrite(data.frame(semi_naive.ashr) %>% rownames_to_column(var = "gene_id"), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/semi_naive_vs_control_naive_deseq.tsv"), sep = "\t", row.names = F)
+# fwrite(data.frame(oops_naive.ashr) %>% rownames_to_column(var = "gene_id"), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/oops_naive_vs_control_naive_deseq.tsv"), sep = "\t", row.names = F)
+
+# fwrite(data.frame(semi_epi.ashr) %>% rownames_to_column(var = "gene_id"), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/semi_epi_vs_control_epi_deseq.tsv"), sep = "\t", row.names = F)
+# fwrite(data.frame(oops_epi.ashr) %>% rownames_to_column(var = "gene_id"), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/oops_epi_vs_control_epi_deseq.tsv"), sep = "\t", row.names = F)
+
+# fwrite(data.frame(semi_diff.ashr) %>% rownames_to_column(var = "gene_id"), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/semi_diff_vs_control_diff_deseq.tsv"), sep = "\t", row.names = F)
+# fwrite(data.frame(oops_diff.ashr) %>% rownames_to_column(var = "gene_id"), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/oops_diff_vs_control_diff_deseq.tsv"), sep = "\t", row.names = F)
+
+```
+
+
+## Get smOOPs
+
+```{r}
+# naive
+naive.smoops.ls <- intersect(sig_res_semi_naive_vs_control_naive.df$gene_id, sig_res_oops_naive_vs_control_naive.df$gene_id)
+naive_smoops.df <- left_join(sig_res_semi_naive_vs_control_naive.df %>%
+                              dplyr::filter(gene_id %in% naive.smoops.ls) %>%
+                              dplyr::select(gene_id, padj, log2FoldChange),
+                            sig_res_oops_naive_vs_control_naive.df %>%
+                              dplyr::filter(gene_id %in% naive.smoops.ls) %>%
+                              dplyr::select(gene_id, padj, log2FoldChange),
+                            by = "gene_id", suffix = c("_semi", "_oops"))
+
+# epi
+epi.smoops.ls <- intersect(sig_res_semi_epi_vs_control_epi.df$gene_id, sig_res_oops_epi_vs_control_epi.df$gene_id)
+epi_smoops.df <- left_join(sig_res_semi_epi_vs_control_epi.df %>%
+                              dplyr::filter(gene_id %in% epi.smoops.ls) %>%
+                              dplyr::select(gene_id, padj, log2FoldChange),
+                            sig_res_oops_epi_vs_control_epi.df %>%
+                              dplyr::filter(gene_id %in% epi.smoops.ls) %>%
+                              dplyr::select(gene_id, padj, log2FoldChange),
+                            by = "gene_id", suffix = c("_semi", "_oops"))
+
+# diff
+diff.smoops.ls <- intersect(sig_res_semi_diff_vs_control_diff.df$gene_id, sig_res_oops_diff_vs_control_diff.df$gene_id)
+diff_smoops.df <- left_join(sig_res_semi_diff_vs_control_diff.df %>%
+                              dplyr::filter(gene_id %in% diff.smoops.ls) %>%
+                              dplyr::select(gene_id, padj, log2FoldChange),
+                            sig_res_oops_diff_vs_control_diff.df %>%
+                              dplyr::filter(gene_id %in% diff.smoops.ls) %>%
+                              dplyr::select(gene_id, padj, log2FoldChange),
+                            by = "gene_id", suffix = c("_semi", "_oops"))
+```
+
+Save files:
+
+```{r}
+# fwrite(data.frame(naive_smoops.df), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/naive_smoops_deseq.tsv"), sep = "\t", row.names = F)
+# fwrite(data.frame(epi_smoops.df), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/epi_smoops_deseq.tsv"), sep = "\t", row.names = F)
+# fwrite(data.frame(diff_smoops.df), paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/diff_smoops_deseq.tsv"), sep = "\t", row.names = F)
+```
+
+## Plot smOOPs overlaps
+
+### Upset plot
+
+```{r}
+# Combine the smOOPs sets into a list
+sig_gene_lists <- list(
+  naive = naive.smoops.ls,
+  epi = epi.smoops.ls,
+  diff = diff.smoops.ls
+)
+
+# Convert the list of significant genes into a binary matrix
+all_genes <- unique(unlist(sig_gene_lists))
+binary_matrix <- sapply(sig_gene_lists, function(x) as.integer(all_genes %in% x))
+rownames(binary_matrix) <- all_genes
+
+
+# Create the UpSet plot
+pdf(paste0(figures.dir, "figure_1/smoops_upset.pdf"))
+upset(as.data.frame(binary_matrix),
+      sets = c("naive", "epi", "diff"),
+      order.by = "freq",
+      empty.intersections = "on", 
+      mainbar.y.label = "Genes Intersection Size",
+      sets.x.label = "smOOPS Per Stage",
+      sets.bar.color = rev(smoops_colors))
+dev.off()
+```
+
+### LFC scatter plots
+
+```{r}
+naive_scatter <- plot_smoops_scatter(semi_naive.ashr, oops_naive.ashr, stage = "naive", max_padj, min_lfc)
+epi_scatter <- plot_smoops_scatter(semi_epi.ashr, oops_epi.ashr, stage = "epi", max_padj, min_lfc)
+diff_scatter <- plot_smoops_scatter(semi_diff.ashr, oops_diff.ashr, stage = "diff", max_padj, min_lfc)
+
+corr.gg <- cowplot::plot_grid(naive_scatter$plot, epi_scatter$plot, diff_scatter$plot,
+                   ncol = 1)
+
+ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
+```
+
+
+# Basic features of smOOPs (compared to controls)
+
+Load mastertable to extract transcripts
+
+```{r}
+master.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/Master Dataset/all_smOOPS_and_controls.tsv")
+```
+
+
+Extract feature lengths
+
+```{r}
+mm.txdb <- make_txdb(paste0(base.results.dir, "ref/gencode.vM27.annotation.gtf.gz"), "Mus musculus")
+txlengths <- transcriptLengths(mm.txdb, with.cds_len = TRUE,
+                               with.utr5_len = TRUE,
+                               with.utr3_len = TRUE)
+
+txlengths.dt <- data.table(txlengths, key = c("tx_name", "gene_id"))
+```
+
+
+Add feature lengths to mastertable
+
+```{r}
+master.df <- left_join(master.df, txlengths.dt, by = c("transcript_id" = "tx_name", "gene_id")) %>% dplyr::select(-tx_id, -nexon)
+```
+
+```{r}
+naive.tx_features.df <- master.df %>%
+  dplyr::filter(smoops_naive == TRUE) %>%
+  dplyr::select(-(smoops_naive:control_common)) %>%
+  mutate(group = "naive smOOPs")
+
+epi.tx_features.df <- master.df %>%
+  dplyr::filter(smoops_epi == TRUE) %>%
+  dplyr::select(-(smoops_naive:control_common)) %>%
+  mutate(group = "epi smOOPs")
+
+diff.tx_features.df <- master.df %>%
+  dplyr::filter(smoops_diff == TRUE) %>%
+  dplyr::select(-(smoops_naive:control_common)) %>%
+  mutate(group = "diff smOOPs")
+
+control.tx_features.df <- master.df %>%
+  dplyr::filter(control_common == TRUE) %>%
+  dplyr::select(-(smoops_naive:control_common)) %>%
+  mutate(group = "control")
+
+all.tx_features.df <- rbind(naive.tx_features.df, epi.tx_features.df, diff.tx_features.df, control.tx_features.df)
+```
+
+
+Pivot longer and rename features
+
+```{r}
+all.tx_features.long.df <- pivot_longer(all.tx_features.df, cols = c(tx_len, utr5_len, cds_len, utr3_len), names_to = "feature_type", values_to = "length")
+
+all.tx_features.long.df <- all.tx_features.long.df %>%
+  mutate(feature_type = case_when(feature_type == "tx_len" ~ "transcript",
+                                  feature_type == "utr5_len" ~ "5'UTR",
+                                  feature_type == "utr3_len" ~ "3'UTR",
+                                  feature_type == "cds_len" ~ "CDS"))
+
+all.tx_features.long.df$feature_type <- factor(all.tx_features.long.df$feature_type, levels = c("transcript", "5'UTR", "CDS", "3'UTR"))
+all.tx_features.long.df$group <- factor(all.tx_features.long.df$group, levels = c("control", "naive smOOPs", "epi smOOPs", "diff smOOPs"))
+
+```
+
+
+```{r}
+
+features.gg <- ggplot(all.tx_features.long.df %>% dplyr::filter(length >= 1), aes(x = group, y = length)) +
+  geom_violin(aes(fill = group, colour = group)) +
+  geom_boxplot(width = 0.15, alpha = 0.5) +
+  scale_color_manual(values = c("naive smOOPs" = "#4682B4",
+                                  "epi smOOPs" = "#008080",
+                                  "diff smOOPs" = "#894c89",
+                                  "control" = "grey70")) +
+  scale_fill_manual(values = c("naive smOOPs" = "#4682B4",
+                                  "epi smOOPs" = "#008080",
+                                  "diff smOOPs" = "#894c89",
+                                  "control" = "grey70")) +
+  #scale_color_manual(values = c(smoops_colors, "control" = "grey70")) +
+  #scale_fill_manual(values = c(smoops_colors, "control" = "grey70")) +
+  scale_y_log10() +
+  # annotation_logticks(sides = "l") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), axis.title.x = element_blank(),
+        legend.title = element_blank()) +
+  facet_grid(~feature_type, space = "free")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
