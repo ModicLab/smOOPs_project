@@ -31,6 +31,7 @@ suppressPackageStartupMessages(library(cowplot))
 # suppressPackageStartupMessages(library(clusterProfiler))
 suppressPackageStartupMessages(library(UpSetR))
 suppressPackageStartupMessages(library(GenomicFeatures))
+suppressPackageStartupMessages(library(rtracklayer))
 
 theme_set(theme_cowplot() +
             theme(legend.position = "top"))
@@ -208,7 +209,8 @@ plot_stacked_barchart <- function(data.df, column, group=NULL, simplify=TRUE) {
     ylab("Percentage") + xlab("") +
     theme_cowplot()
 
-  return(bar)
+  # return(bar)
+  return(list(plot = bar, data = data_counts.df))
 
 }
 
@@ -475,7 +477,7 @@ diff_scatter <- plot_smoops_scatter(semi_diff.ashr, oops_diff.ashr, stage = "dif
 corr.gg <- cowplot::plot_grid(naive_scatter$plot, epi_scatter$plot, diff_scatter$plot,
                    ncol = 1)
 
-ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
+#ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
 ```
 
 
@@ -484,7 +486,7 @@ ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation.pdf"), corr.gg, dpi 
 Load mastertable to extract transcripts
 
 ```{r}
-master.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/Master Dataset/all_smOOPS_and_controls.tsv")
+master.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/Master Dataset/all_smOOPS_and_controls_V2.tsv")
 ```
 
 
@@ -549,7 +551,6 @@ all.tx_features.long.df$group <- factor(all.tx_features.long.df$group, levels = 
 
 
 ```{r}
-
 features.gg <- ggplot(all.tx_features.long.df %>% dplyr::filter(length >= 1), aes(x = group, y = length)) +
   geom_violin(aes(fill = group, colour = group)) +
   geom_boxplot(width = 0.15, alpha = 0.5) +
@@ -572,15 +573,156 @@ features.gg <- ggplot(all.tx_features.long.df %>% dplyr::filter(length >= 1), ae
 
 
 
+```{r}
+features.gg
+ggsave(paste0(figures.dir, "figure_1/smoops_feature_lengths.pdf"), features.gg, dpi = 300, width = 8, height = 8)
+ggsave(paste0(figures.dir, "figure_1/smoops_feature_lengths.png"), features.gg, dpi = 300, width = 8, height = 8)
+```
+
+
+# Annotation of smOOPs
+
+```{r}
+annotate_genes <- function(annotation.gr, df) {
+  
+  annotation.genes.df <- as.data.frame(annotation.gr[annotation.gr$type == "gene"]) %>% 
+    dplyr::select(gene_id, gene_name, gene_type)
+  
+  # annotation.genes.df <- annotation.genes.df %>%
+  #   rowwise() %>%
+  #   mutate(id = str_split(gene_id, "\\.")[[1]][1]) %>%
+  #   ungroup()
+  
+  
+  if (! "gene_id" %in% colnames(df)) {
+    
+    df <- rownames_to_column(df, "gene_id")
+    
+  }
+  
+  annotated.df <- left_join(df, annotation.genes.df, by = "gene_id")
+  
+  return(annotated.df)
+}
+```
 
 
 
+Load annotation
+
+```{r}
+mm.gr <- rtracklayer::import.gff2(paste0(base.results.dir, "ref/gencode.vM27.annotation.gtf.gz"))
+```
+
+Annotate smOOPs
+
+```{r}
+naive_smoops.df <- annotate_genes(mm.gr, naive_smoops.df) %>%
+  dplyr::mutate(group = "naive smOOPs")
+
+epi_smoops.df <- annotate_genes(mm.gr, epi_smoops.df) %>%
+  dplyr::mutate(group = "epi smOOPs")
+
+diff_smoops.df <- annotate_genes(mm.gr, diff_smoops.df) %>%
+  dplyr::mutate(group = "diff smOOPs")
+
+all_smoops.df <- rbind(naive_smoops.df, epi_smoops.df, diff_smoops.df) %>%
+  dplyr::select(gene_id, gene_type, group)
+```
+
+Annotate non-smOOPs
+
+```{r}
+deseq_input_genes.df <- data.frame(semi_naive.ashr) %>%
+  rownames_to_column(var = "gene_id") %>%
+  mutate(group = "non-smOOPs") %>%
+  dplyr::select(gene_id, group)
+
+deseq_input_genes.df <- annotate_genes(mm.gr, deseq_input_genes.df) %>%
+  dplyr::select(gene_id, gene_type, group)
+
+# Remove smoOOPs then combine all for plotting
+deseq_input_genes.df <- anti_join(deseq_input_genes.df, all_smoops.df, by = "gene_id")
+```
+
+```{r}
+annotated_groups.df <- rbind(all_smoops.df, deseq_input_genes.df)
+```
+
+
+```{r} 
+annotated_groups.counts.df <- annotated_groups.df %>%
+  group_by(group, gene_type) %>%
+  summarise(counts = n())
+```
 
 
 
+```{r}
+per.df <- plot_stacked_barchart(annotated_groups.df, column = gene_type, group = group)$data
+
+```
+
+```{r}
+per.df$category <- factor(per.df$category, levels = c("lncRNA", "protein_coding", "TEC", "processed_pseudogene", "Other"))
+per.df$group <- factor(per.df$group, levels = c("non-smOOPs","naive smOOPs", "epi smOOPs", "diff smOOPs"))
+
+```
 
 
+```{r}
+bar1.gg <- ggplot(per.df, aes(x = category, y = percentage)) +
+  geom_bar(stat = "identity", width = 0.5, position = "dodge", aes(fill = group)) +
+  facet_grid(rows = vars(group)) +
+  scale_color_manual(values = c("naive smOOPs" = "#4682B4",
+                                  "epi smOOPs" = "#008080",
+                                  "diff smOOPs" = "#894c89",
+                                  "non-smOOPs" = "grey70")) +
+  scale_fill_manual(values = c("naive smOOPs" = "#4682B4",
+                                  "epi smOOPs" = "#008080",
+                                  "diff smOOPs" = "#894c89",
+                                  "non-smOOPs" = "grey70")) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), axis.title.x = element_blank(),
+        legend.title = element_blank(),
+        strip.text = element_blank(),       # Remove facet labels
+        strip.background = element_blank()) # Remove facet boxes
+```
 
 
+```{r}
+bar2.gg <- ggplot(per.df, aes(x = category, y = percentage, fill = group)) +
+  geom_bar(stat = "identity", width = 0.5, position = position_dodge(width = 0.55)) +
+  ylab("Proportion") + xlab("") +
+  # scale_color_manual(values = c("naive smOOPs" = "#4682B4",
+  #                                 "epi smOOPs" = "#008080",
+  #                                 "diff smOOPs" = "#894c89",
+  #                                 "non-smOOPs" = "grey70")) +
+  scale_fill_manual(values = c("naive smOOPs" = "#4682B4",
+                                  "epi smOOPs" = "#008080",
+                                  "diff smOOPs" = "#894c89",
+                                  "non-smOOPs" = "grey70")) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
 
+
+```{r}
+ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_facets.pdf"), bar1.gg, dpi = 300, width = 6, height = 18)
+ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_facets.png"), bar1.gg, dpi = 300, width = 6, height = 18)
+
+```
+
+```{r}
+ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_grouped.pdf"), bar2.gg, dpi = 300, width = 8, height = 8)
+ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_grouped.png"), bar2.gg, dpi = 300, width = 8, height = 8)
+```
+
+```{r}
+per.df
+```
+
+
+```{r}
+# plot_stacked_barchart(annotated_groups.df, column = gene_type, group = group) 
+```
 
