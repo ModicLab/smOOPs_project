@@ -32,12 +32,16 @@ suppressPackageStartupMessages(library(cowplot))
 suppressPackageStartupMessages(library(UpSetR))
 suppressPackageStartupMessages(library(GenomicFeatures))
 suppressPackageStartupMessages(library(rtracklayer))
+suppressPackageStartupMessages(library(circlize))
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(corrplot))
+
 
 theme_set(theme_cowplot() +
             theme(legend.position = "top"))
 ```
 
-#### Functions
+# Functions
 
 ```{r}
 #' Plot smOOPs Scatter Plot
@@ -125,8 +129,25 @@ plot_smoops_scatter <- function(semi_stage.ashr, oops_stage.ashr, stage, max_pad
 }
 
 
-# if SSL connection problems
-# BiocManager::install("GenomicFeatures", force = T)
+#' Create or load a transcript database (TxDb) from a GTF file.
+#'
+#' This function creates a transcript database (TxDb) from a given GTF file if it doesn't already exist, 
+#' or loads it from a previously saved SQLite database file if available. The resulting TxDb object is 
+#' then restricted to standard chromosomes.
+#'
+#' @param gtf A character string representing the file path to the GTF file.
+#' @param org A character string specifying the organism name (used when creating the TxDb).
+#' @return A TxDb object representing the transcript database.
+#'
+#' @details 
+#' - If the SQLite database file (`.sqlite`) already exists for the given GTF file, it will be loaded to avoid re-creating it.
+#' - If the SQLite database does not exist, it is generated using `makeTxDbFromGFF()`, saved to a `.sqlite` file, and then loaded.
+#' - The resulting TxDb object is pruned to keep only the standard chromosomes.
+#'
+#' @examples
+#' # Create or load a TxDb object from a GTF file:
+#' txdb <- make_txdb("path/to/your_file.gtf", "Homo sapiens")
+#'
 make_txdb <- function(gtf, org) {
 
   # Get name of db
@@ -139,10 +160,9 @@ make_txdb <- function(gtf, org) {
   } else {
 
     TxDb <- makeTxDbFromGFF(gtf, format="gtf",
-                            organism = org) # chrominfo = seqinfo(TxDb.Hsapiens.UCSC.hg38.knownGene
+                            organism = org)
 
     saveDb(TxDb, file=name)
-    # TxDb <- loadDb(name)
   }
 
   TxDb <- keepStandardChromosomes(TxDb, pruning.mode="coarse")
@@ -150,6 +170,63 @@ make_txdb <- function(gtf, org) {
 }
 
 
+#' Annotate a data frame with gene information.
+#'
+#' This function annotates a given data frame by adding gene information (gene name and gene type) based on a GRanges object containing gene annotations. The gene information is joined to the data frame using the `gene_id` column.
+#'
+#' @param annotation.gr A GRanges object containing genomic annotations, including gene IDs, names, and types. Only annotations of type "gene" are used.
+#' @param df A data frame to be annotated, which should contain a `gene_id` column. If it doesn't, the rownames are assumed to be gene IDs and are converted into a `gene_id` column.
+#' @return A data frame with the original columns from `df` and additional columns for `gene_name` and `gene_type`.
+#'
+#' @details
+#' - The function filters the `annotation.gr` object to only include entries of type "gene".
+#' - If the input `df` does not contain a `gene_id` column, the rownames are converted to `gene_id`.
+#' - The gene annotations are then joined to the data frame based on `gene_id` using a left join.
+#'
+#' @examples
+#' # Example usage
+#' annotated_df <- annotate_genes(annotation.gr, expression_df)
+#'
+annotate_genes <- function(annotation.gr, df) {
+  
+  annotation.genes.df <- as.data.frame(annotation.gr[annotation.gr$type == "gene"]) %>% 
+    dplyr::select(gene_id, gene_name, gene_type)
+  
+  if (! "gene_id" %in% colnames(df)) {
+    
+    df <- rownames_to_column(df, "gene_id")
+    
+  }
+  
+  annotated.df <- left_join(df, annotation.genes.df, by = "gene_id")
+  
+  return(annotated.df)
+}
+
+
+#' Plot a stacked bar chart with percentages.
+#'
+#' This function creates a stacked bar chart where the height of each bar represents percentages. The bars are grouped by a specified column and colored according to a categorical column. The chart includes options for simplifying the categories by merging low-frequency categories into an "Other" group.
+#'
+#' @param data.df A data frame containing the data to be plotted.
+#' @param column The column containing the categorical variable to be displayed in the stacked bar chart.
+#' @param group The grouping variable (e.g., conditions or categories for x-axis).
+#' @param simplify Logical, whether to simplify low-percentage categories into an "Other" category (default is TRUE).
+#' @return A list containing:
+#'   - `plot`: The ggplot object representing the stacked bar chart.
+#'   - `data`: A data frame of the summarized data used for the plot.
+#'
+#' @details
+#' - The function calculates the percentage of each category within each group.
+#' - When `simplify = TRUE`, categories representing less than 1% of the total are grouped into an "Other" category.
+#' - The function also adds labels to the plot indicating the percentage of each segment.
+#'
+#' @examples
+#' # Example usage:
+#' # Assuming `my_data` is a data frame with columns "gene_id", "condition", and "category"
+#' result <- plot_stacked_barchart(my_data, column = category, group = condition, simplify = TRUE)
+#' result$plot  # To display the plot
+#'
 plot_stacked_barchart <- function(data.df, column, group=NULL, simplify=TRUE) {
 
   if (!("id" %in% colnames(data.df))) {
@@ -211,9 +288,48 @@ plot_stacked_barchart <- function(data.df, column, group=NULL, simplify=TRUE) {
 
   # return(bar)
   return(list(plot = bar, data = data_counts.df))
-
 }
 
+
+#' Plot a heatmap of z-scores with column splits specific to the smOOPs project
+#'
+#' This function generates a heatmap of z-scores for a given data frame, with columns split into groups (control, semi, and OOPS). The heatmap includes row names and options for clustering rows and columns.
+#'
+#' @param df A data frame where rows are genes and columns are z-scores for different conditions.
+#' @param title A character string specifying the title of the heatmap.
+#' @return A Heatmap object representing the z-score heatmap with column splits.
+#'
+#' @details
+#' - The columns are split by the groups "control", "semi", and "OOPS".
+#' - Row clustering is enabled by default, while column clustering is disabled.
+#' - Gene names (row names) are displayed on the left side of the heatmap.
+#' - Column names (conditions) are displayed at the top of the heatmap.
+#'
+#' @examples
+#' # Example usage:
+#' heatmap <- plot_zscore_heatmap(df, title = "Z-score Heatmap")
+#' draw(heatmap)
+#'
+plot_zscore_heatmap <- function(df, title) {
+  
+  # Prepare the data matrix
+  data_matrix <- as.matrix(df)
+  
+  # Create the heatmap with column and row splits
+  h <- Heatmap(
+    data_matrix, 
+    name = "zscore", 
+    column_split = factor(rep(c("control", "semi", "OOPS"), each = 1), levels = c("control", "semi", "OOPS")),  # Column split by groups
+    cluster_rows = T,  # Disable row clustering
+    cluster_columns = FALSE, 
+    column_title = title,   # Disable column clustering
+    show_row_names = TRUE,  # Show gene names (gene_id)
+    row_names_side = "left",
+    show_column_names = T,  # Show column names
+    #heatmap_legend_param = list(title = "zscore", title_position = "top")
+    )
+  return(h)
+}
 ```
 
 
@@ -236,10 +352,7 @@ Set paths and color scheme for results
 ```{r}
 base.results.dir <- "~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/"
 figures.dir <- paste0(base.results.dir, "figures/")
-```
 
-
-```{r}
 # smoops_colors = c("naive" = "#4682B4", "epi" = "#008080", diff = "#894c89")
 # control_colors = c("naive" = "#4682B433", "epi" = "#00808033", diff = "#894C8933")
 
@@ -311,7 +424,6 @@ dds <- DESeq(dds)
 # List available results names to confirm that the desired contrast is included
 resultsNames(dds)
 ```
-
 
 ## DESeq2 results for smOOPs
 
@@ -463,7 +575,7 @@ upset(as.data.frame(binary_matrix),
       empty.intersections = "on", 
       mainbar.y.label = "Genes Intersection Size",
       sets.x.label = "smOOPS Per Stage",
-      sets.bar.color = rev(smoops_colors))
+      sets.bar.color = rev(smoops_values))
 dev.off()
 ```
 
@@ -477,7 +589,7 @@ diff_scatter <- plot_smoops_scatter(semi_diff.ashr, oops_diff.ashr, stage = "dif
 corr.gg <- cowplot::plot_grid(naive_scatter$plot, epi_scatter$plot, diff_scatter$plot,
                    ncol = 1)
 
-#ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
+# ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
 ```
 
 
@@ -488,7 +600,6 @@ Load mastertable to extract transcripts
 ```{r}
 master.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/Master Dataset/all_smOOPS_and_controls_V2.tsv")
 ```
-
 
 Extract feature lengths
 
@@ -506,9 +617,7 @@ Add feature lengths to mastertable
 
 ```{r}
 master.df <- left_join(master.df, txlengths.dt, by = c("transcript_id" = "tx_name", "gene_id")) %>% dplyr::select(-tx_id, -nexon)
-```
 
-```{r}
 naive.tx_features.df <- master.df %>%
   dplyr::filter(smoops_naive == TRUE) %>%
   dplyr::select(-(smoops_naive:control_common)) %>%
@@ -532,8 +641,7 @@ control.tx_features.df <- master.df %>%
 all.tx_features.df <- rbind(naive.tx_features.df, epi.tx_features.df, diff.tx_features.df, control.tx_features.df)
 ```
 
-
-Pivot longer and rename features
+Pivot longer and rename features for plotting
 
 ```{r}
 all.tx_features.long.df <- pivot_longer(all.tx_features.df, cols = c(tx_len, utr5_len, cds_len, utr3_len), names_to = "feature_type", values_to = "length")
@@ -547,10 +655,7 @@ all.tx_features.long.df <- all.tx_features.long.df %>%
 all.tx_features.long.df$feature_type <- factor(all.tx_features.long.df$feature_type, levels = c("transcript", "5'UTR", "CDS", "3'UTR"))
 all.tx_features.long.df$group <- factor(all.tx_features.long.df$group, levels = c("control", "naive smOOPs", "epi smOOPs", "diff smOOPs"))
 
-```
-
-
-```{r}
+# Plot
 features.gg <- ggplot(all.tx_features.long.df %>% dplyr::filter(length >= 1), aes(x = group, y = length)) +
   geom_violin(aes(fill = group, colour = group)) +
   geom_boxplot(width = 0.15, alpha = 0.5) +
@@ -569,44 +674,13 @@ features.gg <- ggplot(all.tx_features.long.df %>% dplyr::filter(length >= 1), ae
   theme(axis.text.x = element_text(angle = 60, hjust = 1), axis.title.x = element_blank(),
         legend.title = element_blank()) +
   facet_grid(~feature_type, space = "free")
-```
 
-
-
-```{r}
-features.gg
-ggsave(paste0(figures.dir, "figure_1/smoops_feature_lengths.pdf"), features.gg, dpi = 300, width = 8, height = 8)
-ggsave(paste0(figures.dir, "figure_1/smoops_feature_lengths.png"), features.gg, dpi = 300, width = 8, height = 8)
+# ggsave(paste0(figures.dir, "figure_1/smoops_feature_lengths.pdf"), features.gg, dpi = 300, width = 8, height = 8)
+# ggsave(paste0(figures.dir, "figure_1/smoops_feature_lengths.png"), features.gg, dpi = 300, width = 8, height = 8)
 ```
 
 
 # Annotation of smOOPs
-
-```{r}
-annotate_genes <- function(annotation.gr, df) {
-  
-  annotation.genes.df <- as.data.frame(annotation.gr[annotation.gr$type == "gene"]) %>% 
-    dplyr::select(gene_id, gene_name, gene_type)
-  
-  # annotation.genes.df <- annotation.genes.df %>%
-  #   rowwise() %>%
-  #   mutate(id = str_split(gene_id, "\\.")[[1]][1]) %>%
-  #   ungroup()
-  
-  
-  if (! "gene_id" %in% colnames(df)) {
-    
-    df <- rownames_to_column(df, "gene_id")
-    
-  }
-  
-  annotated.df <- left_join(df, annotation.genes.df, by = "gene_id")
-  
-  return(annotated.df)
-}
-```
-
-
 
 Load annotation
 
@@ -641,36 +715,21 @@ deseq_input_genes.df <- data.frame(semi_naive.ashr) %>%
 deseq_input_genes.df <- annotate_genes(mm.gr, deseq_input_genes.df) %>%
   dplyr::select(gene_id, gene_type, group)
 
-# Remove smoOOPs then combine all for plotting
+# Remove smOOPs then combine all for plotting
 deseq_input_genes.df <- anti_join(deseq_input_genes.df, all_smoops.df, by = "gene_id")
-```
-
-```{r}
 annotated_groups.df <- rbind(all_smoops.df, deseq_input_genes.df)
-```
 
+# annotated_groups.counts.df <- annotated_groups.df %>%
+#   group_by(group, gene_type) %>%
+#   summarise(counts = n())
 
-```{r} 
-annotated_groups.counts.df <- annotated_groups.df %>%
-  group_by(group, gene_type) %>%
-  summarise(counts = n())
-```
-
-
-
-```{r}
+# Get percentages
 per.df <- plot_stacked_barchart(annotated_groups.df, column = gene_type, group = group)$data
 
-```
-
-```{r}
 per.df$category <- factor(per.df$category, levels = c("lncRNA", "protein_coding", "TEC", "processed_pseudogene", "Other"))
 per.df$group <- factor(per.df$group, levels = c("non-smOOPs","naive smOOPs", "epi smOOPs", "diff smOOPs"))
 
-```
-
-
-```{r}
+# Plot
 bar1.gg <- ggplot(per.df, aes(x = category, y = percentage)) +
   geom_bar(stat = "identity", width = 0.5, position = "dodge", aes(fill = group)) +
   facet_grid(rows = vars(group)) +
@@ -703,26 +762,307 @@ bar2.gg <- ggplot(per.df, aes(x = category, y = percentage, fill = group)) +
                                   "non-smOOPs" = "grey70")) +
   theme(axis.text.x = element_text(angle = 60, hjust = 1), axis.title.x = element_blank(),
         legend.title = element_blank())
-```
 
-
-```{r}
-ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_facets.pdf"), bar1.gg, dpi = 300, width = 6, height = 18)
-ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_facets.png"), bar1.gg, dpi = 300, width = 6, height = 18)
-
-```
-
-```{r}
-ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_grouped.pdf"), bar2.gg, dpi = 300, width = 8, height = 8)
-ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_grouped.png"), bar2.gg, dpi = 300, width = 8, height = 8)
-```
-
-```{r}
-per.df
+# ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_facets.pdf"), bar1.gg, dpi = 300, width = 6, height = 18)
+# ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_facets.png"), bar1.gg, dpi = 300, width = 6, height = 18)
+# 
+# ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_grouped.pdf"), bar2.gg, dpi = 300, width = 8, height = 8)
+# ggsave(paste0(figures.dir, "figure_1/smoops_gene_types_grouped.png"), bar2.gg, dpi = 300, width = 8, height = 8)
 ```
 
 
 ```{r}
 # plot_stacked_barchart(annotated_groups.df, column = gene_type, group = group) 
 ```
+
+# PCA and pairwise count correlations
+
+## PCA
+
+```{r}
+rlog <- rlog(dds)
+
+# Assuming the 'assay' column exists in your data, modify the plot accordingly:
+pca_data$condition <- colData(rlog)$condition  # Make sure 'assay' is part of your data
+
+# Create the PCA plot with shape based on assay type
+pca.gg <- ggplot(pca_data, aes(PC1, PC2, color = stage)) +
+  geom_point(size = 4, alpha = 0.8, aes(shape = condition)) +  # Adjust point size and transparency
+  # geom_text_repel(aes(label = sample), 
+  #                 box.padding = 0.7, 
+  #                 point.padding = 0.5, 
+  #                 max.overlaps = Inf, 
+  #                 size = 5,  # Increase label size
+  #                 segment.color = 'black', # Segment line from label to point
+  #                 segment.size = 0.4) +
+  theme_cowplot() +
+  theme(legend.position = "right",  # Adjust legend position
+        legend.text = element_text(size = 12),  # Increase legend text size
+        legend.title = element_text(size = 14),  # Increase legend title size
+        axis.title = element_text(size = 14),  # Increase axis title size
+        axis.text = element_text(size = 12)) +  # Increase axis text size
+  scale_color_manual(values = c(naive = "#bdcae2", epiSC = "#b1c7c9", diff = "#cdb7d1")) +
+  scale_shape_manual(values = c(16, 17, 18)) +  # Define different shapes for 'control', 'oops', 'semi'
+  labs(shape = "Assay", color = "Stage")  # Rename the shape legend to 'Assay'
+
+ggsave("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_1/semi_oops_ctrl_pca.pdf",
+       pca.gg, width = 7, height = 6, dpi = 300)
+```
+
+
+
+## correlation
+
+Get rlog normalised counts
+
+```{r}
+rlog.df <- as.data.frame(assay(rlog))
+
+# Calculate the Pearson correlation matrix
+cor_matrix <- cor(rlog.df, method = "pearson")
+custom_col <- colorRampPalette(c("white", "grey60", "grey30"))
+
+# Create a correlation plot
+corr.gg <- corrplot::corrplot(cor_matrix, method = "circle", 
+         # addCoef.col = "white",              # Add correlation coefficients in black
+         tl.col = "black",                   # Text label color
+         is.corr = F,                     # Plot correlation matrix
+         cl.pos = "r",                       # Position of color legend
+         number.cex = 0.8,
+         #col.lim = c(0.98, 1), # Size of the correlation labels
+         tl.srt = 45,                        # Rotate text labels
+         # number.digits = 3,
+          col = custom_col(200))  # Use custom color gradient)                  # Show 3 decimal places for correlation values
+```
+
+
+# Plot top semi and OOPS-enriched genes from each stage
+
+```{r}
+# select top 5 semi in naive stc for semi or oops
+
+top_semi_naive.df <- naive_smoops.df %>%
+  slice_max(log2FoldChange_semi, n = 5)
+
+top_oops_naive.df <- naive_smoops.df %>%
+  slice_max(log2FoldChange_oops, n = 5)
+
+top_semi_epi.df <- epi_smoops.df %>%
+  slice_max(log2FoldChange_semi, n = 5)
+
+top_oops_epi.df <- epi_smoops.df %>%
+  slice_max(log2FoldChange_oops, n = 5)
+
+top_semi_diff.df <- diff_smoops.df %>%
+  slice_max(log2FoldChange_semi, n = 5)
+
+top_oops_diff.df <- diff_smoops.df %>%
+  slice_max(log2FoldChange_oops, n = 5)
+```
+
+
+```{r}
+mean_rlog.df <- rlog.df %>%
+  rownames_to_column(var = "id") %>%
+  rowwise() %>%
+  mutate(mean_semi_naive = mean(c_across(semi_naive_1:semi_naive_3), na.rm = TRUE),
+         mean_semi_epi = mean(c_across(semi_epiSC_1:semi_epiSC_3), na.rm = TRUE),
+         mean_semi_diff = mean(c_across(semi_diff_1:semi_diff_3), na.rm = TRUE),
+         mean_control_naive = mean(c_across(control_naive_1:control_naive_3), na.rm = TRUE),
+         mean_control_epi = mean(c_across(control_epiSC_1:control_epiSC_3), na.rm = TRUE),
+         mean_control_diff = mean(c_across(control_diff_1:control_diff_3), na.rm = TRUE),
+         mean_oops_naive = mean(c_across(oops_naive_1:oops_naive_3), na.rm = TRUE),
+         mean_oops_epi = mean(c_across(oops_epiSC_1:oops_epiSC_3), na.rm = TRUE),
+         mean_oops_diff = mean(c_across(oops_diff_1:oops_diff_2), na.rm = TRUE)) %>%
+  ungroup() %>%
+  dplyr::select(id, mean_control_naive, mean_semi_naive, mean_oops_naive, 
+                mean_control_epi, mean_semi_epi, mean_oops_epi,
+                mean_control_diff, mean_semi_diff, mean_oops_diff)
+```
+
+## rlog all-together
+
+```{r}
+top.mean_rlog.df <- mean_rlog.df %>%
+  mutate(category = case_when(id %in% top_semi_naive.df$gene_id ~ "top_semi_naive",
+                              id %in% top_oops_naive.df$gene_id ~ "top_oops_naive",
+                              id %in% top_semi_epi.df$gene_id ~ "top_semi_epi",
+                              id %in% top_oops_epi.df$gene_id ~ "top_oops_epi",
+                              id %in% top_semi_diff.df$gene_id ~ "top_semi_diff",
+                              id %in% top_oops_diff.df$gene_id ~ "top_oops_diff")) %>%
+  dplyr::filter(!is.na(category))
+```
+
+
+```{r}
+# Extract the relevant columns for the heatmap (excluding the 'category' column)
+heatmap_data <- as.matrix(top.mean_rlog.df %>% 
+                            dplyr::select(mean_control_naive, mean_semi_naive, mean_oops_naive, mean_control_epi, mean_semi_epi, mean_oops_epi,
+                mean_control_diff, mean_semi_diff, mean_oops_diff))
+rownames(heatmap_data) <- top.mean_rlog.df$id
+
+# Optional: Define color scheme
+col_fun <- colorRamp2(c(min(heatmap_data), mean(heatmap_data), max(heatmap_data)), 
+                      c("blue", "white", "red"))
+
+# Generate the heatmap
+Heatmap(
+  heatmap_data,
+  name = "Expression",                         # Name for the legend
+  col = col_fun,   
+  column_split = factor(rep(c("Naive", "EpiSC", "diff"), each = 3), levels = c("Naive", "EpiSC", "diff")),  # Column split by groups
+  show_row_names = TRUE,                       # Show gene IDs
+  show_column_names = F,                    # Show condition names
+  cluster_rows = T,                         # Cluster rows (genes)
+  cluster_columns = F,                      # Cluster columns (conditions)
+  column_title = "",                 # Title for the columns
+  row_title = "Gene",                         # Title for the rows
+  row_names_side = "left",
+  heatmap_legend_param = list(title = "Normalised counts\n(rlog)")  # Legend title
+)
+```
+
+## one heatmap for top of each stage
+
+```{r warning=FALSE}
+mean_rlog.df <- left_join(mean_rlog.df, dplyr::select(rbind(naive_smoops.df, epi_smoops.df, diff_smoops.df), gene_name, gene_id),
+                          by =c("id" = "gene_id"))
+```
+
+Naive:
+
+```{r}
+top_naive.df <- mean_rlog.df %>%
+  dplyr::select(id, gene_name, contains("naive")) %>%
+  dplyr::filter(id %in% union(top_semi_naive.df$gene_id, top_oops_naive.df$gene_id)) %>%
+  dplyr::distinct(gene_name, .keep_all = T) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(-id)
+
+z_scores.top_naive <- t(apply(top_naive.df, 1, scale))
+
+# Convert back to data frame and add gene_id column
+z_scores.top_naive.df <- data.frame(z_scores.top_naive) 
+colnames(z_scores.top_naive.df) <- colnames(top_naive.df)
+
+h1 <- plot_zscore_heatmap(z_scores.top_naive.df, "naive")
+```
+
+Epi: 
+
+```{r}
+top_epi.df <- mean_rlog.df %>%
+  dplyr::select(id, gene_name, contains("epi")) %>%
+  dplyr::filter(id %in% union(top_semi_epi.df$gene_id, top_oops_epi.df$gene_id)) %>%
+  dplyr::distinct(gene_name, .keep_all = T) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(-id)
+
+z_scores.top_epi <- t(apply(top_epi.df, 1, scale))
+
+# Convert back to data frame and add gene_id column
+z_scores.top_epi.df <- data.frame(z_scores.top_epi) 
+colnames(z_scores.top_epi.df) <- colnames(top_epi.df)
+
+h2 <- plot_zscore_heatmap(z_scores.top_epi.df, "epi")
+```
+
+Diff:
+
+```{r}
+top_diff.df <- mean_rlog.df %>%
+  dplyr::select(id, gene_name, contains("diff")) %>%
+  dplyr::filter(id %in% union(top_semi_diff.df$gene_id, top_oops_diff.df$gene_id)) %>%
+  dplyr::distinct(gene_name, .keep_all = T) %>%
+  column_to_rownames(var = "gene_name") %>%
+  dplyr::select(-id)
+
+z_scores.top_diff <- t(apply(top_diff.df, 1, scale))
+
+# Convert back to data frame and add gene_id column
+z_scores.top_diff.df <- data.frame(z_scores.top_diff) 
+colnames(z_scores.top_diff.df) <- colnames(top_diff.df)
+
+# Create the heatmap with column and row splits
+h3 <- plot_zscore_heatmap(z_scores.top_diff.df, "diff")
+```
+
+Save heatmaps:
+
+```{r}
+# Open a PDF device
+pdf("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_1/naive_top_smoops_heatmap.pdf", width = 3, height = 5)
+draw(h1)
+# Close the PDF device
+dev.off()
+
+pdf("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_1/epi_top_smoops_heatmap.pdf", width = 3.5, height = 5)
+draw(h2)
+dev.off()
+
+pdf("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_1/diff_top_smoops_heatmap.pdf", width = 3, height = 5)
+draw(h3)
+dev.off()
+```
+
+
+# Heatmap for FISH candidates
+
+Obtain rlog counts
+
+```{r}
+fish.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/fish_results/FISH_results_expression.csv")
+
+fish.mean_rlog.df <- mean_rlog.df %>%
+  dplyr::filter(id %in% fish.df$gene_id) %>%
+  column_to_rownames(var = "id") %>%
+  dplyr::select(-category)
+
+```
+
+
+Compute Z-scores row-wise
+
+```{r}
+z_scores <- t(apply(fish.mean_rlog.df, 1, scale))
+
+# Convert back to data frame and add gene_id column
+mean_rlog.zscore.df <- data.frame(z_scores) 
+colnames(mean_rlog.zscore.df) <- colnames(fish.mean_rlog.df)
+
+fish.mean_rlog.zscore.df <- left_join(mean_rlog.zscore.df %>% rownames_to_column(var = "gene_id"),
+                                      fish.df %>% dplyr::select(gene_id, rank, gene_name),
+                                      by = "gene_id")
+
+fish.mean_rlog.zscore.df$rank <-factor(fish.mean_rlog.zscore.df$rank, 
+                                       levels = c("control", "bottom", "middle", "top"))
+
+# Prepare the data matrix
+data_matrix <- as.matrix(fish.mean_rlog.zscore.df[, -c(1,5,6)])  # Exclude gene_id and rank columns
+
+# Set row names as gene_id
+rownames(data_matrix) <- fish.mean_rlog.zscore.df$gene_name
+
+# Verify the dimensions of the matrix
+print(dim(data_matrix))  # Should return rows and 9 columns (3 control, 3 semi, 3 oops)
+
+# Split rows by rank
+row_split <- fish.mean_rlog.zscore.df$rank
+
+# Create the heatmap with column and row splits
+Heatmap(
+  data_matrix, 
+  name = "zscore", 
+  # top_annotation = column_ha, 
+  column_split = factor(rep(c("control", "semi", "OOPS"), each = 1), levels = c("control", "semi", "OOPS")),  # Column split by groups
+  row_split = row_split,  # Row split by rank
+  cluster_rows = FALSE,  # Disable row clustering
+  cluster_columns = FALSE,  # Disable column clustering
+  show_row_names = TRUE,  # Show gene names (gene_id)
+  show_column_names = F,  # Show column names
+  #heatmap_legend_param = list(title = "zscore", title_position = "top")
+)
+```
+
+
 
