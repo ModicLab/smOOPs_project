@@ -1,0 +1,1143 @@
+---
+title: "Analyses of mESC RIC-seq data"
+author: "Ira Iosub"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_notebook:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    theme: paper
+    highlight: monochrome
+    df_print: paged
+    code_folding: hide
+  html_document:
+    toc: yes
+    toc_depth: '3'
+    df_print: paged
+---
+
+
+```{r}
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(toscatools))
+suppressPackageStartupMessages(library(circlize))
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(poweRlaw))
+suppressPackageStartupMessages(library(ggrastr))
+suppressPackageStartupMessages(library(ggpubr))
+# library(reshape2)
+
+set.seed(42)
+```
+
+# Functions
+
+## Basic hybrids functions
+
+```{r}
+#' Load hybrid data from a file, reorient it, and extract sample and stage information.
+#'
+#' @param filepath The path to the hybrid data file.
+#' @return A data.table containing the loaded, reoriented hybrid data with added sample and stage columns.
+load_hybrids <- function(filepath) {
+  
+  data.dt <- fread(filepath)
+  data.dt <- toscatools::reorient_hybrids(data.dt)
+  data.dt$sample <- str_split(basename(filepath), pattern = "\\.")[[1]][1]
+  data.dt$stage <- str_split(basename(filepath), pattern = "\\_")[[1]][1]
+  
+  return(data.dt)
+}
+
+
+#' Filter and categorize RIC-seq data.
+#'
+#' This function filters RIC-seq data by removing specific unwanted sequences (rRNA, rDNA, tRNA, and mitochondrial DNA), updates the 'type' field for intra- and inter-molecular interactions, and ensures valid gene names for further analysis.
+#'
+#' @param ricseq.df A data frame containing RIC-seq data.
+#' @return A filtered and categorized data frame with updated interaction types.
+#'
+filter_and_categorize_ricseq <- function(ricseq.df) {
+  filtered.ricseq.df <- ricseq.df %>%
+    dplyr::filter(!str_detect(L_seqnames, "rRNA|rDNA|tRNA")) %>%
+    dplyr::filter(!str_detect(R_seqnames, "rRNA|rDNA|tRNA")) %>%
+    dplyr::filter(L_genomic_seqnames != "chrM") %>%
+    dplyr::filter(R_genomic_seqnames != "chrM") %>%
+    mutate(type = case_when(type == "intragenic" & L_gene_id == R_gene_id ~ "intra-molecular",
+                            TRUE ~ "inter-molecular")) %>%
+    dplyr::filter(L_gene_id != ".") %>%
+    dplyr::filter(R_gene_id != ".")
+  
+  return(filtered.ricseq.df)
+}
+
+
+#' Filter and summarize regions for a specific stage.
+#'
+#' This function filters the input data for a given stage, excludes inter-molecular region pairs, and summarizes the counts of occurrences for each region pair. It also separates the region pairs into two distinct columns.
+#'
+#' @param inter.df A data frame containing interaction data, including stage and region pairs.
+#' @param stage A character string specifying the stage to filter by (e.g., "naive" or "epi").
+#' @return A summarized data frame with counts of region pairs for the specified stage, with region pairs split into two columns.
+#'
+filter_and_summarize_regions_by_stage <- function(inter.df, stage) {
+  regions.df <- inter.df %>%
+    dplyr::filter(stage == !!stage) %>%
+    dplyr::select(name, region_pairs) %>%
+    dplyr::filter(!str_detect(region_pairs, "inter-molecular")) %>%
+    group_by(region_pairs) %>%
+    summarise(counts = n()) %>%
+    tidyr::separate(region_pairs, "-", into = c("region_1", "region_2"))
+  
+  return(regions.df)
+}
+```
+
+
+## Inter counts functions
+
+```{r}
+#' Perform Gene Interaction Analysis and Generate DESeq Counts and Density Plot
+#'
+#' This function processes an interaction dataframe to compute gene counts,
+#' prepares counts for DESeq analysis, and generates a density plot of gene counts
+#' colored by stage. It returns a list containing the counts dataframe,
+#' DESeq-formatted counts dataframe, and the generated plot.
+#'
+#' @param inter_df A `data.frame` containing interaction data with the following columns:
+#'   - `name`: Identifier for the interaction.
+#'   - `L_gene_id`: Left gene identifier.
+#'   - `R_gene_id`: Right gene identifier.
+#'   - `stage`: Developmental or experimental stage.
+#'   - `sample`: Sample identifier.
+#' @param control_values A named or unnamed vector of colors to be used for the `stage` aesthetic in the plot.
+#'
+#' @return A named `list` with three elements:
+#'   - `gene_inter_counts_df`: A `data.frame` with gene counts per sample and stage.
+#'   - `gene_inter_deseq_counts_df`: A `data.frame` formatted for DESeq analysis with genes as row names and samples as columns.
+#'   - `plot`: A `ggplot` object showing the density of gene counts colored by stage.
+#'
+#' @examples
+#' \dontrun{
+#' # Assuming `inter_df` is your input dataframe and `control_colors` is your color vector
+#' result <- gene_inter_analysis(inter_df, control_colors)
+#' 
+#' # Accessing the results
+#' counts_df <- result$gene_inter_counts_df
+#' deseq_counts_df <- result$gene_inter_deseq_counts_df
+#' density_plot <- result$plot
+#' 
+#' # Display the plot
+#' print(density_plot)
+#' }
+#'
+#' @import dplyr
+#' @import tidyr
+#' @import ggplot2
+#' @import cowplot
+#' @export
+gene_inter_analysis <- function(inter_df, control_values) {
+  # Ensure required packages are loaded
+  require(dplyr)
+  require(tidyr)
+  require(ggplot2)
+  require(cowplot)
+  
+  # Step 1: Compute gene interaction counts
+  gene_inter_counts_df <- inter_df %>%
+    dplyr::select(name, L_gene_id, R_gene_id, stage, sample) %>%
+    pivot_longer(
+      cols = c(L_gene_id, R_gene_id),
+      names_to = "arm",
+      values_to = "gene_id"
+    ) %>%
+    group_by(gene_id, sample, stage) %>%
+    summarise(count = n(), .groups = "drop") %>%
+    dplyr::filter(gene_id != ".")
+  
+  # Step 2: Prepare counts dataframe for DESeq analysis
+  gene_inter_deseq_counts_df <- gene_inter_counts_df %>%
+    dplyr::select(-stage) %>%
+    pivot_wider(
+      names_from = sample,
+      values_from = count
+    ) %>%
+    column_to_rownames(var = "gene_id")
+  
+  # Replace NA values with 0
+  gene_inter_deseq_counts_df[is.na(gene_inter_deseq_counts_df)] <- 0
+  
+  # Step 3: Generate density plot of gene counts
+  density_plot <- ggplot(gene_inter_counts_df, aes(x = count)) +
+    geom_density(aes(color = stage)) +
+    scale_color_manual(values = control_values) +
+    # Uncomment and modify the following line if faceting by group is needed
+    # facet_grid(~group) +
+    scale_x_log10() +
+    annotation_logticks(sides = "b") +
+    theme_cowplot()
+  
+  # Return the results as a list
+  return(list(
+    gene_inter_counts_df = gene_inter_counts_df,
+    gene_inter_deseq_counts_df = gene_inter_deseq_counts_df,
+    plot = density_plot
+  ))
+}
+
+
+#' Plot Assay Correlations with Highlighted Genes of Interest
+#'
+#' This function generates scatter plots showing the correlation between two assay types 
+#' (e.g., RIC-seq and nonhybrid) for a specific experimental condition (e.g., "epi" or "naive"). 
+#' It calculates the Pearson correlation between the mean values of the two assays and highlights 
+#' specific genes of interest using a custom color.
+#'
+#' @param data A data frame where rows represent genes and columns represent assay measurements for 
+#'             different conditions. Each column should be prefixed with the assay type (e.g., "ricseq" 
+#'             or "nonhybrid") followed by the condition (e.g., "epi", "naive").
+#' @param prefix A string representing the condition of interest (e.g., "epi", "naive"). 
+#'               This is used to filter the relevant columns based on the prefix.
+#' @param assay_types A character vector specifying the assay types to include in the correlation. 
+#'                    The default is `c("ricseq", "nonhybrid")`.
+#' @param colors A string specifying the color to use for the general points in the scatter plot.
+#'               The default is "grey70".
+#' @param title_suffix A string that will be appended to the plot's title. This is useful for indicating
+#'                     the specific condition (e.g., "(epi)" or "(naive)"). The default is an empty string.
+#' @param genes_of_interest A character vector of gene names to highlight in the plot. The names should match 
+#'                          the row names of the `data` data frame. If NULL, no genes will be highlighted. 
+#'                          The default is NULL.
+#' @param highlight_color A string specifying the color to use for highlighting the genes of interest. 
+#'                        The default is "red".
+#'
+#' @return A ggplot object representing the scatter plot. This plot shows the correlation between the two 
+#'         assay types for the given condition, with an optional highlight for genes of interest.
+#'
+#' @examples
+#' # Assuming rlog.df is the data frame containing the assay data:
+#' plot <- plot_assay_correlations(
+#'   data = rlog.df,
+#'   prefix = "epi",
+#'   assay_types = c("ricseq", "nonhybrid"),
+#'   colors = "#b1c7c9",
+#'   title_suffix = "(epi)",
+#'   genes_of_interest = c("GeneA", "GeneB"),
+#'   highlight_color = "green"
+#' )
+#' print(plot)
+#'
+#' @export
+plot_assay_correlations <- function(data, prefix, assay_types = c("ricseq", "nonhybrid"), 
+                                    colors = "grey70", title_suffix = "",
+                                    genes_of_interest = NULL, highlight_color = "red") {
+  
+  # Create regex patterns based on prefix and assay types
+  patterns <- paste0("^(", paste(assay_types, collapse = "|"), ")_", prefix)
+  
+  # Filter relevant columns
+  selected_cols <- grep(patterns, names(data), value = TRUE)
+  data_subset <- data[, selected_cols]
+  
+  # Calculate means for each assay type
+  mean_ricseq <- rowMeans(data_subset[, grep("^ricseq_", names(data_subset))], na.rm = TRUE)
+  mean_nonhybrid <- rowMeans(data_subset[, grep("^nonhybrid_", names(data_subset))], na.rm = TRUE)
+  
+  # Calculate Pearson correlation
+  pearson_r <- cor(mean_ricseq, mean_nonhybrid, use = "complete.obs")
+  
+  # Create a data frame for plotting
+  plot_df <- data.frame(mean_ricseq = mean_ricseq, mean_nonhybrid = mean_nonhybrid, gene = rownames(data))
+  
+  # Generate the base scatter plot
+  scat.gg <- ggplot(plot_df, aes(x = mean_ricseq, y = mean_nonhybrid)) +
+    geom_point(size = 1, alpha = 0.2, color = colors) +
+    geom_smooth(method = "lm", color = "blue", linetype = "dashed") +
+    xlab(paste("Mean Normalised Counts in RIC-seq (", prefix, ")", sep = "")) +
+    ylab(paste("Mean Normalised Counts in nonhybrids (", prefix, ")", sep = "")) +
+    ggtitle(paste(title_suffix)) +
+    theme_cowplot() +
+    annotate("text", x = Inf, y = Inf, label = paste("Pearson r =", round(pearson_r, 2)), 
+             hjust = 1.1, vjust = 1.5, size = 5, color = "black")
+  
+  # If genes of interest are specified, highlight them in the plot
+  if (!is.null(genes_of_interest)) {
+    scat.gg <- scat.gg +
+      geom_point(data = plot_df[plot_df$gene %in% genes_of_interest, ], 
+                 aes(x = mean_ricseq, y = mean_nonhybrid), 
+                 color = highlight_color, size = 1, alpha = 0.4)
+  }
+  
+  return(scat.gg)
+}
+
+
+```
+
+## Global network analyses functions
+
+```{r}
+plot_degree_fit <- function(graph, stage) {
+  # Step 1: Calculate the degree distribution
+  deg <- degree(graph)
+
+  # Step 2: Create a data frame for the degree distribution and compute density
+  deg_df <- as.data.frame(table(deg))  # Create a table of degree frequencies
+  names(deg_df) <- c("degree", "frequency")
+  deg_df$degree <- as.numeric(as.character(deg_df$degree))
+  deg_df$density <- deg_df$frequency / sum(deg_df$frequency)  # Convert to density
+
+  # Step 3: Perform linear regression on the log-transformed data
+  fit <- lm(log10(density) ~ log10(degree), data = deg_df)
+
+  # Step 4: Generate the plot with degree distribution and fit line
+  deg_df$stage <- stage
+
+  degree_fit_plot <- ggplot(deg_df, aes(x = degree, y = density)) +
+    geom_point(size = 2, aes(color = stage), alpha = 0.6) +  # Dots for degree distribution (density)
+    scale_x_log10() +
+    scale_y_log10() +
+    scale_color_manual(values = control_values) +
+    annotation_logticks(sides = "bl") +
+    geom_abline(intercept = coef(fit)[1], slope = coef(fit)[2], color = "red", size = 1) +  # Fit line on log-log scale
+    labs(
+         x = "Degree (log scale)",
+         y = "Density (log scale)") +
+    theme_cowplot()
+
+  # Return the plot with the fit line
+  return(degree_fit_plot)
+}
+
+```
+
+
+## Degree analyses functions
+
+```{r}
+#' Compute TPM for Non-hybrid Counts
+#'
+#' This function calculates Transcripts Per Million (TPM) for non-hybrid counts
+#' based on gene lengths. The user must specify the relevant columns for gene lengths 
+#' and non-hybrid counts.
+#'
+#' @param df Data frame with at least 'gene_id', non-hybrid counts, and gene length columns.
+#' @param gene_length_col Column name in the data frame that contains gene lengths in base pairs.
+#' @param nonhybrid_counts_col Column name in the data frame that contains non-hybrid counts.
+#'
+#' @return A data frame with an added column for TPM of non-hybrid counts.
+
+compute_tpm <- function(df, gene_length_col, nonhybrid_counts_col) {
+
+  # Check if required columns are present
+  required_cols <- c("gene_id", gene_length_col, nonhybrid_counts_col)
+  missing_cols <- setdiff(required_cols, colnames(df))
+  if (length(missing_cols) > 0) {
+    stop(paste("Data frame is missing required columns:", paste(missing_cols, collapse = ", ")))
+  }
+  
+  # Exclude genes with zero gene length to avoid division by zero
+  df <- df[df[[gene_length_col]] > 0, ]
+
+  # Convert gene lengths to kilobases
+  df$gene_length_kb <- df[[gene_length_col]] / 1000
+  
+  ### Calculate TPM ###
+  
+  # Non-hybrid TPM
+  df$nonhybrid_rpk <- df[[nonhybrid_counts_col]] / df$gene_length_kb
+  total_nonhybrid_rpk <- sum(df$nonhybrid_rpk)
+  df$nonhybrid_tpm <- (df$nonhybrid_rpk / total_nonhybrid_rpk) * 1e6
+  
+  # Remove temporary columns
+  df$gene_length_kb <- NULL
+  df$nonhybrid_rpk <- NULL
+  
+  return(df)
+}
+
+```
+
+
+
+
+
+# Data
+
+```{r}
+smoops_values = c("naive" = "#4682B4", "epi" = "#008080", diff = "#894c89")
+control_values = c("naive" = "#bdcae2", "epi" = "#b1c7c9", diff = "#cdb7d1")
+
+base.results.dir <- "~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/"
+figures.dir <- paste0(base.results.dir, "figures/")
+```
+
+## RIC-seq
+
+```{r}
+ricseq.ls <- list.files("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/ricseq/hybrids_tosca_v1",
+                        pattern = ".tsv.gz", full.names = T)
+
+ricseq.df <- rbindlist(lapply(ricseq.ls, load_hybrids), use.names=TRUE)
+filtered.ricseq.df <- filter_and_categorize_ricseq(ricseq.df)
+```
+
+## Non-hybrids (featurecounts)
+
+```{r}
+featurecounts.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/ricseq/nonhybrids/gene_counts_mo_fraction.txt") %>%
+  dplyr::rename_with(~ gsub("\\.umi_dedup\\.sorted\\.bam$", "", .), everything()) %>%
+  dplyr::rename(gene_id = Geneid) %>%
+  dplyr::select(gene_id, Length, epi_1:naive_3) %>%
+  rowwise() %>%
+  mutate(sum_epi = sum(epi_1, epi_2, epi_3),
+         sum_naive = sum(naive_1, naive_2, naive_3)) %>%
+  ungroup()
+```
+
+## smOOPs mastertable
+
+```{r}
+master.df <- fread("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/Master Dataset/all_smOOPS_and_controls_V2.tsv")
+naive.master.df <- master.df %>%
+  dplyr::filter(smoops_naive == T)
+
+# Split it by stage
+epi.master.df <- master.df %>%
+  dplyr::filter(smoops_epi == T)
+
+naive.smoops.df <- filtered.ricseq.df %>%
+  dplyr::filter(stage == "naive") %>%
+  dplyr::filter(L_gene_id %in% naive.master.df$gene_id & R_gene_id %in% naive.master.df$gene_id )
+
+epi.smoops.df <- filtered.ricseq.df %>%
+  dplyr::filter(stage == "epi") %>%
+  dplyr::filter(L_gene_id %in% epi.master.df$gene_id & R_gene_id %in% epi.master.df$gene_id)
+```
+
+## Genes analysed by DESeq2
+
+```{r}
+rlog.df <- fread(paste0(base.results.dir, "deseq2_smoops/deseq2_results_tables/smoops_deseq2.rlog.tsv.gz"))
+```
+
+
+# Global characterisation of RIC-seq data
+
+## Figure 2B: Intra/inter hybrid counts
+
+```{r}
+filtered.ricseq_counts.df <- filtered.ricseq.df %>%
+  group_by(stage, type) %>%
+  summarise(count = n())
+
+
+filtered.ricseq_counts.df$stage <- factor(filtered.ricseq_counts.df$stage, levels = c("naive", "epi"))
+
+ricseq.counts.gg <- ggplot(filtered.ricseq_counts.df, aes(x = type, y = count, label = count)) +
+  # geom_bar(stat = "identity", width = 0.5, aes(fill = stage)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), aes(fill = stage)) +
+  facet_grid(rows = vars(stage)) +
+  theme(strip.text = element_text(size = 7))  +
+  theme_cowplot() +
+  coord_flip() +
+  scale_fill_manual(values = control_values) +
+  ylab("Hybrid reads") +
+  xlab("") +
+  theme(
+    strip.text = element_blank(),  # Remove facet labels
+    strip.background = element_blank(),  # Remove facet boxes
+    legend.title = element_blank(),  # Remove legend title
+    axis.text.x = element_text(size = 9))
+
+# ggsave("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_4/ricseq_counts.pdf", ricseq.counts.gg, dpi = 300, height = 2.5, width = 7)
+
+filtered.ricseq_counts.df
+```
+
+## Figure S2C: Regions connections
+
+```{r}
+inter.df <- filtered.ricseq.df %>%
+  dplyr::filter(type == "inter-molecular")
+
+
+inter.df <- inter.df %>%
+  rowwise() %>%
+   mutate(region_pairs = paste(sort(c(L_region, R_region)), collapse = "-"),
+           # biotype_pairs = paste(sort(c(L_biotype, R_biotype)), collapse = "-"),
+           gene_pair = paste(sort(c(L_gene_id, R_gene_id)), collapse = ":")) %>%
+    ungroup()
+# fwrite(inter.df, "~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/ricseq/processed_hybrids/intermolecular_hybrids.tsv.gz", sep = "\t")
+
+naive.regions.df <- filter_and_summarize_regions_by_stage(inter.df, stage = "naive")
+
+# (36488 + 29777 + 2588 + 95788 + 19095)/sum(naive.regions.df$counts)
+epi.regions.df <- filter_and_summarize_regions_by_stage(inter.df, stage = "epi")
+
+col_fun = colorRamp2(c(0, 100, 400), c("white", "grey", "black"))
+
+
+# grid.col = c(ncRNA = "red", UTR3 = "yellow", UTR5 = "blue",
+#           E1 = "grey", E2 = "grey", E3 = "grey", E4 = "grey", E5 = "grey", E6 = "grey")
+
+# pdf("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_4/ricseq_inter_region_links.pdf", width = 12, height = 6)
+
+# Set up side-by-side layout
+par(mfrow = c(1, 2))
+set.seed(122)
+
+# First chord diagram
+chordDiagram(naive.regions.df, transparency = 0.8)
+set.seed(122)
+
+# Second chord diagram
+chordDiagram(epi.regions.df, transparency = 0.8)
+
+# Close the PDF device
+# dev.off()
+
+# Restore default layout
+par(mfrow = c(1, 1))
+
+```
+
+Get percentages
+
+nPSCs:
+
+```{r}
+# Step 1: Melt region_1 and region_2 into a single column
+melted_df <- naive.regions.df %>%
+  pivot_longer(cols = c(region_1, region_2), names_to = "region_type", values_to = "region")
+
+# Step 2: Group by region and calculate total counts for each region
+region_counts <- melted_df %>%
+  group_by(region) %>%
+  summarise(total_counts = sum(counts))
+
+# Step 3: Calculate percentage of each region based on the total counts
+total_sum <- sum(region_counts$total_counts)
+region_counts <- region_counts %>%
+  mutate(percentage = (total_counts / total_sum) * 100)
+
+print(region_counts)
+```
+
+pPSCs:
+
+```{r}
+melted_df <- epi.regions.df %>%
+  pivot_longer(cols = c(region_1, region_2), names_to = "region_type", values_to = "region")
+
+# Step 2: Group by region and calculate total counts for each region
+region_counts <- melted_df %>%
+  group_by(region) %>%
+  summarise(total_counts = sum(counts))
+
+# Step 3: Calculate percentage of each region based on the total counts
+total_sum <- sum(region_counts$total_counts)
+region_counts <- region_counts %>%
+  mutate(percentage = (total_counts / total_sum) * 100)
+
+# Display the result
+print(region_counts)
+```
+
+
+# Global characterisation of networks from RIC-seq data
+
+## Get gene pair counts and graphs
+
+```{r}
+pair_count.df <- inter.df %>%
+  dplyr::filter(L_gene_id != ".") %>%
+  dplyr::filter(R_gene_id != ".") %>%
+  group_by(stage, gene_pair) %>%
+  summarise(pair_count = n()) %>%
+  ungroup() %>%
+  tidyr::separate(gene_pair, into = c("gene_A", "gene_B"), sep = ":", remove = F) %>%
+  mutate(group_A = case_when(gene_A %in% naive.master.df$gene_id & !(gene_A %in% epi.master.df$gene_id) ~ "naive_smOOPs",
+                             gene_A %in% epi.master.df$gene_id & !(gene_A %in% naive.master.df$gene_id) ~ "epi_smOOPs",
+                             gene_A %in% naive.master.df$gene_id & gene_A %in% epi.master.df$gene_id ~ "naive+epi_smOOPs",
+                             TRUE ~ "non_smOOPs"),
+         group_B = case_when(gene_B %in% naive.master.df$gene_id & !(gene_B %in% epi.master.df$gene_id) ~ "naive_smOOPs",
+                             gene_B %in% epi.master.df$gene_id & !(gene_B %in% naive.master.df$gene_id) ~ "epi_smOOPs",
+                             gene_B %in% naive.master.df$gene_id & gene_B %in% epi.master.df$gene_id ~ "naive+epi_smOOPs",
+                             TRUE ~ "non_smOOPs")) %>%
+  rowwise() %>%
+  mutate(smoops_pair = paste(sort(c(group_A, group_A)), collapse = "-")) %>%
+  ungroup()
+
+
+# Get naive network
+naive.pairs.df <- pair_count.df %>%
+  dplyr::filter(stage == "naive") %>%
+  dplyr::distinct(gene_A, gene_B, pair_count) %>%
+  dplyr::rename(weight = pair_count)
+
+naive.g <- graph_from_data_frame(d = naive.pairs.df, directed = FALSE)
+
+# Get epi network
+epi.pairs.df <- pair_count.df %>%
+  dplyr::filter(stage == "epi") %>%
+  dplyr::distinct(gene_A, gene_B, pair_count) %>%
+  dplyr::rename(weight = pair_count)
+
+epi.g <- graph_from_data_frame(d = epi.pairs.df, directed = FALSE)
+```
+
+
+## Figure S2D: Power-law degree fit
+
+
+```{r}
+z1 <- plot_degree_fit(naive.g, stage = "naive")
+z2 <- plot_degree_fit(naive.g, stage = "epi")
+
+power.gg <- plot_grid(z1, z2, align = "v", axis = "l", ncol =1)
+```
+
+
+## Figure S2E: genrated with the get_small_world_metrics.R script (https://github.com/ModicLab/smOOPs_project/blob/main/analysis/network_analyses/get_small_world_metrics.R)
+
+## Figure S2F: Path lengths dstribution
+
+nPSCs
+
+```{r}
+# Find the largest connected component (LCC)
+clusters <- clusters(naive.g)
+lcc_index <- which.max(clusters$csize)
+lcc <- induced_subgraph(naive.g, which(clusters$membership == lcc_index))
+
+# Calculate all shortest path lengths within the LCC
+naive.path_lengths <- distances(lcc)
+
+# Extract the upper triangle of the distance matrix to avoid duplicates
+naive.path_lengths <- naive.path_lengths[upper.tri(naive.path_lengths)]
+
+# # Convert to a data frame for ggplot
+# df.naive <- data.frame(path_lengths = naive.path_lengths)
+
+# Compute a smoother density estimate
+naive.density_est <- density(naive.path_lengths, n = 512, bw = 1, from = 1)  # Increase 'n' and use default 'nrd0' bw
+
+# Compute the mean of the path lengths
+mean_value <- mean(naive.path_lengths)
+
+# Plot the density with an empty plot first
+plot(naive.density_est, 
+     main = "nPSCs", 
+     xlab = "Path length", 
+     ylab = "Density", type = "l", lwd = 4, 
+     log = "x", col = "#bdcae2")  # Use 'type = "n"' to set up the plot without drawing anything yet
+
+# Add a vertical line at the mean
+mean_value <- mean(naive.path_lengths)
+abline(v = mean_value, col = "black", lwd = 2, lty = 2)
+```
+
+pPSCs
+
+```{r}
+# Find the largest connected component (LCC)
+clusters <- clusters(epi.g)
+lcc_index <- which.max(clusters$csize)
+lcc <- induced_subgraph(epi.g, which(clusters$membership == lcc_index))
+
+# Calculate all shortest path lengths within the LCC
+epi.path_lengths <- distances(lcc)
+
+# Extract the upper triangle of the distance matrix to avoid duplicates
+epi.path_lengths <- epi.path_lengths[upper.tri(epi.path_lengths)]
+
+# # Convert to a data frame for ggplot
+# df.epi <- data.frame(path_lengths = epi.path_lengths)
+
+# Compute a smoother density estimate
+epi.density_est <- density(epi.path_lengths, n = 512, bw = 1, from =1)  # Increase 'n' and use default 'nrd0' bw
+
+# Compute the mean of the path lengths
+mean_value <- mean(epi.path_lengths)
+
+# Plot the density with an empty plot first
+plot(epi.density_est, 
+     main = "pPSCs", 
+     xlab = "Path length", 
+     ylab = "Density", type = "l", lwd = 4, 
+     log = "x", col = "#b1c7c9")  # Use 'type = "n"' to set up the plot without drawing anything yet
+
+# Add a vertical line at the mean
+mean_value <- mean(epi.path_lengths)
+abline(v = mean_value, col = "black", lwd = 2, lty = 2)
+
+```
+
+
+# smOOPs subnetwork analyses
+
+## Figure 2C: Visualise smOOPs subnetwork
+
+```{r}
+# Step 1: Extract smOOPs gene IDs from naive.master.df
+naive.smOOPs_genes <- naive.master.df$gene_id
+
+# Step 2: Induce the subgraph from the full network
+naive.smoops.rri.g <- induced_subgraph(naive.g, vids = V(naive.g)[name %in% naive.smOOPs_genes])
+sum(E(naive.smoops.rri.g)$weight)
+summary(naive.smoops.rri.g)
+```
+
+```{r}
+# Combine the connected and unconnected nodes into one network for visualization
+combined_network <- naive.smoops.rri.g
+
+# Make sure you're using the igraph package's degree function explicitly
+naive.vertex_degrees <- igraph::degree(combined_network, mode = "all")
+
+# Identify unconnected nodes (degree 0)
+unconnected_nodes <- which(naive.vertex_degrees == 0)
+
+V(combined_network)$color <- adjustcolor("#0073b3", alpha.f = 0.75)
+
+# Set vertex size with log10(degree) scaling, handling unconnected nodes separately
+V(combined_network)$size <- ifelse(naive.vertex_degrees == 0, 0.5, log10(naive.vertex_degrees + 1) * 1.3)
+
+# Set edge widths based on weights (log2 normalization), emphasizing stronger connections
+if ("weight" %in% edge_attr_names(combined_network)) {
+  E(combined_network)$width <- log2(E(combined_network)$weight + 1) / max(log2(E(combined_network)$weight + 1)) * 3
+  E(combined_network)$color <- adjustcolor("#4682B4", alpha.f = 0.4)
+} else {
+  E(combined_network)$width <- 1.5
+  E(combined_network)$color <- adjustcolor("#4682B4", alpha.f = 0.4)
+}
+
+# Optional: Decrease the transparency of the strongest edges for further emphasis
+high_strength_edges <- which(E(combined_network)$width > quantile(E(combined_network)$width, 0.75))
+E(combined_network)$color[high_strength_edges] <- adjustcolor("#4682B4", alpha.f = 0.4)  # Emphasize
+
+# Generate a layout for the connected nodes (connected component)
+connected_nodes <- which(naive.vertex_degrees > 0)
+layout_connected <- layout_with_fr(induced_subgraph(combined_network, connected_nodes))
+
+# Apply a scaling factor to the connected nodes layout to prevent squishing
+scaling_factor <- 2  # Adjust this value to control how spread out the connected nodes are
+layout_connected <- layout_connected * scaling_factor
+
+# Generate positions for unconnected nodes: Align them vertically on one side
+num_unconnected <- length(unconnected_nodes)
+layout_unconnected <- cbind(rep(max(layout_connected[,1]) + 1, num_unconnected), seq(min(layout_connected[,2]), max(layout_connected[,2]), length.out = num_unconnected))
+
+# Combine both layouts into one matrix
+layout_combined <- matrix(NA, ncol = 2, nrow = vcount(combined_network))
+layout_combined[connected_nodes, ] <- layout_connected
+layout_combined[unconnected_nodes, ] <- layout_unconnected  # Place unconnected nodes on the side
+
+# Plot the network with the adjusted layout
+# pdf("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_4/smoops_subnetwork_adjusted_layout_side_spread.pdf", width = 12, height = 10)
+
+plot(combined_network, 
+     vertex.label = NA,                       
+     vertex.size = V(combined_network)$size,  # Use the calculated sizes based on degree
+     vertex.frame.color = NA,
+     edge.width = E(combined_network)$width, 
+     edge.color = E(combined_network)$color,  
+     edge.curved = E(combined_network)$curved,  # Use subtle edge curvature
+     layout = layout_combined  # Use the combined layout for connected and unconnected nodes
+)
+```
+
+# Degree analyses
+
+## Get nonhybrid TPM
+
+nPSCs:
+
+```{r}
+naive.degree.df <- as.data.frame(igraph::degree(naive.g)) %>%
+  dplyr::arrange(desc(igraph::degree(naive.g))) %>%
+  rownames_to_column(var = "gene_id") %>%
+  dplyr::rename(degree = `igraph::degree(naive.g)`) %>%
+  mutate(stage = "nPSCs")
+
+naive.degree.df <- naive.degree.df %>%
+  #left_join(gene.inter.counts.df, by = c("stage", "gene_id")) %>%
+  #left_join(gene.intra.counts.df, by = c("stage", "gene_id")) %>%
+  left_join(dplyr::select(featurecounts.df, gene_id, sum_naive, Length), by = "gene_id") %>%
+  dplyr::rename(nonhybrids_fc = sum_naive) # %>%dplyr::rename(inter_hybrids = count)
+
+naive.tpm.df <- compute_tpm(naive.degree.df, "Length", "nonhybrids_fc")
+
+# Log-transform TPMs
+naive.tpm.df$log2nonhybrid_tpm <- log2(naive.tpm.df$nonhybrid_tpm + 1)
+
+naive.degree_vs_tpm.df <- naive.tpm.df %>%
+  rowwise() %>%
+  mutate(degree_vs_tpm = degree / nonhybrid_tpm,
+         # inter_vs_tpm = inter_hybrids / nonhybrid_tpm,
+         log2degree = log2(degree + 0.1)) %>%
+  mutate(degree_vs_tpm = log2degree - log2nonhybrid_tpm) %>%
+  ungroup() %>%
+  mutate(type = case_when(gene_id %in% naive.master.df$gene_id ~ "nPSCs smOOPs",
+                          TRUE ~ "nPSCs non-smOOPs"),
+         stage = "nPSCs")
+```
+
+
+pPSCs:
+
+```{r}
+epi.degree.df <- as.data.frame(igraph::degree(epi.g)) %>%
+  dplyr::arrange(desc(igraph::degree(epi.g))) %>%
+  rownames_to_column(var = "gene_id") %>%
+  dplyr::rename(degree = `igraph::degree(epi.g)`) %>%
+  mutate(stage = "pPSCs")
+
+epi.degree.df <- epi.degree.df %>%
+  # left_join(gene.inter.counts.df, by = c("stage", "gene_id")) %>%
+  # left_join(gene.intra.counts.df, by = c("stage", "gene_id")) %>%
+  left_join(dplyr::select(featurecounts.df, gene_id, sum_epi, Length), by = "gene_id") %>%
+  dplyr::rename(nonhybrids_fc = sum_epi) #%>%dplyr::rename(inter_hybrids = count)
+
+epi.tpm.df <- compute_tpm(epi.degree.df, "Length", "nonhybrids_fc")
+
+# Log-transform TPMs
+epi.tpm.df$log2nonhybrid_tpm <- log2(epi.tpm.df$nonhybrid_tpm + 1)
+
+epi.degree_vs_tpm.df <- epi.tpm.df %>%
+  rowwise() %>%
+  mutate(degree_vs_tpm = degree / nonhybrid_tpm,
+         # inter_vs_tpm = inter_hybrids / nonhybrid_tpm,
+         # log2degree = log2(degree + 0.1)) %>%
+         log2degree = log2(degree + 0.1)) %>%
+  mutate(degree_vs_tpm = log2degree - log2nonhybrid_tpm) %>%
+  ungroup() %>%
+  mutate(type = case_when(gene_id %in% epi.master.df$gene_id ~ "pPSCs smOOPs",
+                          TRUE ~ "pPSCs non-smOOPs"),
+         stage = "pPSCs")
+```
+
+
+## Figure S2G: Scatter plots degree vs expression across length bins
+
+nPSCs:
+
+```{r}
+# Step 1: Divide genes into quartiles based on gene length
+naive.degree_vs_tpm.df$length_quartile <- ntile(naive.degree_vs_tpm.df$Length, 4)  # Divide into 4 bins (quartiles)
+
+# Step 2: Plot degree vs expression (color by length quartile)
+naive.degree_vs_expression.gg <- ggplot(naive.degree_vs_tpm.df, aes(x = log2nonhybrid_tpm, 
+                                                                y = log2degree, color = type
+                                                                )) +
+  # geom_point(alpha = 0.1) +
+  # First plot the other smOOPs with transparency
+  geom_point_rast(data = naive.degree_vs_tpm.df %>% filter(type != "nPSCs smOOPs"),
+             aes(color = type), alpha = 0.1, size = 0.7) +  # Make other smOOPs more transparent
+  
+  # Then plot the nPSCs smOOPs on top
+  geom_point_rast(data = naive.degree_vs_tpm.df %>% filter(type == "nPSCs smOOPs"),
+             aes(color = type), alpha = 0.15, size = 0.7) +  # 
+  theme_cowplot() +
+  facet_grid(~length_quartile) +
+  # scale_color_brewer(palette = "Set1") +
+  labs(
+       x = "Expression (log2TPM)",
+       y = "log2Degree",
+       color = "") +
+  stat_cor(method = "pearson", label.x.npc = "middle", label.y.npc = "top",
+           aes(label = ..r.label..)) +
+  scale_color_manual(values = c("nPSCs smOOPs" = "#4682B4", 
+                               "nPSCs non-smOOPs" = "#bdcae2")) +
+  # Move legend below the plot
+  theme(legend.position = "none") +
+  
+  # Remove grey facet boxes
+  theme(strip.background = element_blank()) 
+
+```
+
+
+pPSCs:
+
+```{r}
+# Step 1: Divide genes into quartiles based on gene length
+epi.degree_vs_tpm.df$length_quartile <- ntile(epi.degree_vs_tpm.df$Length, 4)  # Divide into 4 bins (quartiles)
+
+# Step 2: Plot degree vs expression (color by length quartile)
+epi.degree_vs_expression.gg <- ggplot(epi.degree_vs_tpm.df, aes(x = log2nonhybrid_tpm, 
+                                                                y = log2degree, color = type
+                                                                )) +
+  # geom_point(alpha = 0.1) +
+  # First plot the other smOOPs with transparency
+  geom_point_rast(data = epi.degree_vs_tpm.df %>% filter(type != "pPSCs smOOPs"),
+             aes(color = type), alpha = 0.1, size = 0.7) +  # Make other smOOPs more transparent
+  
+  # Then plot the nPSCs smOOPs on top
+  geom_point_rast(data = epi.degree_vs_tpm.df %>% filter(type == "pPSCs smOOPs"),
+             aes(color = type), alpha = 0.15, size = 0.7) +  # Plot nPSCs smOOPs on top with larger size
+  theme_cowplot() +
+  facet_grid(~length_quartile) +
+  # scale_color_brewer(palette = "Set1") +
+  labs(
+       x = "Expression (log2TPM)",
+       y = "log2Degree",
+       color = "") +
+  stat_cor(method = "pearson", label.x.npc = "middle", label.y.npc = "top",
+           aes(label = ..r.label..)) +
+  scale_color_manual(values = c("pPSCs smOOPs" = "#008080", 
+                               "pPSCs non-smOOPs" = "#b1c7c9")) +
+  # Move legend below the plot
+  theme(legend.position = "none") +
+  
+  # Remove grey facet boxes
+  theme(strip.background = element_blank()) 
+
+```
+
+Combine plots
+
+```{r}
+degree_vs_expression.gg <- plot_grid(naive.degree_vs_expression.gg, 
+                                     epi.degree_vs_expression.gg, ncol = 1, 
+                                     align = "hv", axis = "lr")
+# ggsave("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_4/degree_vs_expression_length_quartiles_rast.pdf", degree_vs_expression.gg, dpi = 300, height = 5, width = 8)
+```
+
+
+## Quantile matching
+
+```{r}
+# Define the number of quantiles (e.g., quartiles)
+num_quantiles <- 10
+
+# Define a multiplier for the number of non-smOOPs per quantile
+non_smoops_multiplier <- 4  # E.g., 4x as many non-smOOPs as smOOPs
+```
+
+### nPSCs
+
+```{r warning=FALSE}
+naive.degree_vs_tpm.df <- naive.degree_vs_tpm.df %>%
+  dplyr::filter(gene_id %in% (rlog.df$V1))
+
+naive.degree_vs_tpm.df$log2length <- log2(naive.degree_vs_tpm.df$Length)
+naive.degree_vs_tpm.df$log2degree <- log2(naive.degree_vs_tpm.df$degree)
+
+
+# Divide smOOPs into quantiles based on both log2(TPM) and log2(Gene Length)
+naive.quants.df <- naive.degree_vs_tpm.df %>%
+  mutate(tpm_quantile = ntile(log2nonhybrid_tpm, num_quantiles),
+         length_quantile = ntile(log2length, num_quantiles))
+
+
+# non-smOOPs before quantile matching
+naive_non_smoops_prematching.df <- naive.quants.df %>%
+  filter(type == "nPSCs non-smOOPs") %>%
+  mutate(type = "nPSCs non-smOOPs (pre-matching)")
+
+
+# Perform quantile matching for non-smOOPs, allowing for a larger number of genes
+naive.non_smoops_quantile_matched.df <- naive.quants.df %>%
+  filter(type == "nPSCs non-smOOPs") %>%
+  group_by(tpm_quantile, length_quantile) %>%
+  sample_n(
+    size = pmin(
+      n(),  # Ensure we don't sample more than available non-smOOPs
+      non_smoops_multiplier * sum(
+        naive.quants.df$type == "nPSCs smOOPs" & 
+        naive.quants.df$tpm_quantile == tpm_quantile & 
+        naive.quants.df$length_quantile == length_quantile
+      )
+    ), 
+    replace = FALSE
+  ) %>%
+  ungroup() %>%
+  mutate(type = "nPSCs non-smOOPs (post-matching)")
+
+# Combine matched non-smOOPs with smOOPs and pre-matching non-smOOPs
+naive.quantile_matched <- naive.quants.df %>%
+  filter(type == "nPSCs smOOPs") %>%
+  bind_rows(distinct(naive.non_smoops_quantile_matched.df), naive_non_smoops_prematching.df)
+
+
+naive.quantile_matched$type <- factor(naive.quantile_matched$type,levels = c("nPSCs non-smOOPs (pre-matching)", "nPSCs non-smOOPs (post-matching)", "nPSCs smOOPs" ))
+
+naive.quantile_matched.gg <- ggplot(naive.quantile_matched, aes(x = log2nonhybrid_tpm, y = log2length, fill = type)) +
+  stat_density_2d(geom = "polygon", aes(alpha = ..level..), color = "white") +
+  scale_fill_manual(values = c("nPSCs smOOPs" = "#4682B4", "nPSCs non-smOOPs (post-matching)" = "#4682B4", "nPSCs non-smOOPs (pre-matching)" = "#4682B4")) +
+  scale_alpha_continuous(range = c(0.1, 0.7)) +  # Set transparency levels
+  labs(title = "2D Density of expression and length for smOOPs and non-smOOPs",
+       x = "Expression(log2TPM)", y = "log2(Gene length)") +
+  # theme_minimal() +
+  facet_grid(~type) +
+  theme_cowplot()
+
+
+naive.degree.gg <- ggplot(naive.quantile_matched, 
+                          aes(x = type, y = log2degree)) +
+  geom_violin(aes(color = type, fill = type), bw = 0.5) +
+  geom_boxplot(fill = "white", alpha = 0.5, width = 0.1) +
+  scale_fill_manual(values = c("nPSCs smOOPs" = "#4682B4", "nPSCs non-smOOPs (post-matching)" = "#bdcae2", "nPSCs non-smOOPs (pre-matching)" = "#bdcae2")) +
+  scale_color_manual(values = c("nPSCs smOOPs" = "#4682B4", "nPSCs non-smOOPs (post-matching)" = "#bdcae2", "nPSCs non-smOOPs (pre-matching)" = "#bdcae2")) +
+  labs(y = "log2Degree") +
+  facet_wrap(~stage, scales = "free") +
+  theme_cowplot() +
+  
+   # Customize x-axis text and labels
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        axis.title.x = element_text()) +
+  
+  # Move legend below the plot
+  theme(legend.position = "bottom") +
+  
+  # Remove grey facet boxes
+  theme(strip.background = element_blank()) +
+  
+  # Remove legend title
+  guides(color = guide_legend(title = NULL), fill = guide_legend(title = NULL))
+```
+
+### pPSCs
+
+Only keep genes expressed
+
+```{r warning=F}
+epi.degree_vs_tpm.df <- epi.degree_vs_tpm.df %>%
+  dplyr::filter(gene_id %in% (rlog.df$V1))
+
+epi.degree_vs_tpm.df$log2length <- log2(epi.degree_vs_tpm.df$Length)
+epi.degree_vs_tpm.df$log2degree <- log2(epi.degree_vs_tpm.df$degree)
+
+# Define the number of quantiles (e.g., quartiles)
+num_quantiles <- 10
+
+# Divide smOOPs into quantiles based on both log2(TPM) and log2(Gene Length)
+epi.quants.df <- epi.degree_vs_tpm.df %>%
+  mutate(tpm_quantile = ntile(log2nonhybrid_tpm, num_quantiles),
+         length_quantile = ntile(log2length, num_quantiles))
+
+# non-smOOPs before quantile matching
+epi_non_smoops_prematching.df <- epi.quants.df %>%
+  filter(type == "pPSCs non-smOOPs") %>%
+  mutate(type = "pPSCs non-smOOPs (pre-matching)")
+
+
+# Perform quantile matching for non-smOOPs
+epi.non_smoops_quantile_matched.df <- epi.quants.df %>%
+  filter(type == "pPSCs non-smOOPs") %>%
+  group_by(tpm_quantile, length_quantile) %>%
+  sample_n(size = sum(epi.quants.df$type == "pPSCs smOOPs" & epi.quants.df$tpm_quantile == tpm_quantile & 
+                      epi.quants.df$length_quantile == length_quantile), replace = FALSE) %>%
+  ungroup() %>%
+  mutate(type = "pPSCs non-smOOPs (post-matching)")
+
+# Combine matched non-smOOPs with smOOPs
+epi.quantile_matched <- epi.quants.df %>%
+  filter(type == "pPSCs smOOPs") %>%
+  bind_rows(epi.non_smoops_quantile_matched.df, epi_non_smoops_prematching.df)
+
+# Perform quantile matching for non-smOOPs, allowing for a larger number of genes
+epi.non_smoops_quantile_matched.df <- epi.quants.df %>%
+  filter(type == "pPSCs non-smOOPs") %>%
+  group_by(tpm_quantile, length_quantile) %>%
+  sample_n(
+    size = pmin(
+      n(),  # Ensure we don't sample more than available non-smOOPs
+      non_smoops_multiplier * sum(
+        epi.quants.df$type == "pPSCs smOOPs" & 
+        epi.quants.df$tpm_quantile == tpm_quantile & 
+        epi.quants.df$length_quantile == length_quantile
+      )
+    ), 
+    replace = FALSE
+  ) %>%
+  ungroup() %>%
+  mutate(type = "pPSCs non-smOOPs (post-matching)")
+
+# Combine matched non-smOOPs with smOOPs and pre-matching non-smOOPs
+epi.quantile_matched <- epi.quants.df %>%
+  filter(type == "pPSCs smOOPs") %>%
+  bind_rows(distinct(epi.non_smoops_quantile_matched.df), epi_non_smoops_prematching.df)
+
+```
+
+```{r}
+epi.quantile_matched$type <- factor(epi.quantile_matched$type,levels = c("pPSCs non-smOOPs (pre-matching)", "pPSCs non-smOOPs (post-matching)", "pPSCs smOOPs" ))
+
+epi.quantile_matched.gg <- ggplot(epi.quantile_matched, aes(x = log2nonhybrid_tpm, y = log2length, fill = type)) +
+  stat_density_2d(geom = "polygon", aes(alpha = ..level..), color = "white") +
+  scale_fill_manual(values = c("pPSCs smOOPs" = "#008080", "pPSCs non-smOOPs (post-matching)" = "#008080", "pPSCs non-smOOPs (pre-matching)" = "#008080")) +
+  scale_alpha_continuous(range = c(0.1, 0.7)) +  # Set transparency levels
+  labs(title = "2D Density of expression and length for smOOPs and non-smOOPs",
+       x = "Expression(log2TPM)", y = "log2(Gene length)") +
+  # theme_minimal() +
+  facet_grid(~type) +
+  theme_cowplot()
+
+
+epi.degree.gg <- ggplot(epi.quantile_matched, 
+                          aes(x = type, y = log2degree)) +
+  geom_violin(aes(color = type, fill = type), bw = 0.5) +
+  geom_boxplot(fill = "white", alpha = 0.5, width = 0.1) +
+  # scale_fill_manual(values = c("pPSCs smOOPs" = "#4682B4", "pPSCs non-smOOPs" = "#bdcae2",
+  #                              "pPSCs smOOPs" = "#008080", "pPSCs non-smOOPs" = "#b1c7c9")) +
+  # scale_color_manual(values = c("pPSCs smOOPs" = "#4682B4", "pPSCs non-smOOPs" = "#bdcae2",
+  #                               "pPSCs smOOPs" = "#008080", "pPSCs non-smOOPs" = "#b1c7c9")) +
+  scale_fill_manual(values = c("pPSCs smOOPs" = "#008080", "pPSCs non-smOOPs (post-matching)" = "#b1c7c9", "pPSCs non-smOOPs (pre-matching)" = "#b1c7c9")) +
+  scale_color_manual(values = c("pPSCs smOOPs" = "#008080", "pPSCs non-smOOPs (post-matching)" = "#b1c7c9", "pPSCs non-smOOPs (pre-matching)" = "#b1c7c9")) +
+  labs(y = "log2Degree") +
+  facet_wrap(~stage, scales = "free") +
+  theme_cowplot() +
+  
+   # Customize x-axis text and labels
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        axis.title.x = element_text()) +
+  
+  # Move legend below the plot
+  theme(legend.position = "bottom") +
+  
+  # Remove grey facet boxes
+  theme(strip.background = element_blank()) +
+  
+  # Remove legend title
+  guides(color = guide_legend(title = NULL), fill = guide_legend(title = NULL))
+```
+
+## Figure S2H: 2D density plots of quantile matching
+
+```{r}
+matching.gg <- cowplot::plot_grid(naive.quantile_matched.gg, epi.quantile_matched.gg, ncol = 1)
+# ggsave("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_2/matching.pdf", matching.gg, width = 20, height = 14)
+
+
+
+```
+
+## Figure S2I: Degree distribution
+
+```{r}
+degree.gg <- cowplot::plot_grid(naive.degree.gg, epi.degree.gg, ncol = 1)
+# ggsave("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/figures/figure_2/degree_with_matching.pdf", degree.gg, width = 7, height = 20)
+```
+
+## get relevant counts
+
+```{r}
+nrow(epi.non_smoops_quantile_matched.df)
+nrow(naive.non_smoops_quantile_matched.df)
+
+nrow(epi.quants.df %>%
+          filter(type == "pPSCs smOOPs"))
+nrow(naive.quants.df %>%
+          filter(type == "nPSCs smOOPs"))
+
+nrow(epi_non_smoops_prematching.df)
+nrow(naive_non_smoops_prematching.df)
+```
+
