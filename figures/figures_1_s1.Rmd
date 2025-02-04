@@ -45,91 +45,6 @@ theme_set(theme_cowplot() +
 ## smOOPs identification
 
 ```{r}
-#' Plot smOOPs Scatter Plot
-#'
-#' This function generates a scatter plot comparing the log2 fold changes of semi-extractable RNA and OOPS RNA for a specific developmental stage. The function identifies and classifies smOOPs transcripts based on user-defined thresholds for adjusted p-value and log2 fold change. It also computes and displays the Pearson correlation between the semi-extractable and OOPS log2 fold changes.
-#'
-#' @param semi_stage.ashr A data frame containing differential expression results (including `padj` and `log2FoldChange`) from the semi-extractability assay for the selected stage.
-#' @param oops_stage.ashr A data frame containing differential expression results (including `padj` and `log2FoldChange`) from the OOPS assay for the selected stage.
-#' @param stage A character string indicating the developmental stage, used for labeling and classification (e.g., "naive", "epi", "diff").
-#' @param max_padj A numeric value specifying the adjusted p-value threshold to classify transcripts as significant. Default is 0.01.
-#' @param min_lfc A numeric value specifying the minimum log2 fold change threshold to classify transcripts as enriched. Default is 1.
-#'
-#' @return A list containing:
-#'   \item{data}{The data frame used for plotting, including the classifications of smOOPs and non-smOOPs.}
-#'   \item{plot}{The ggplot object visualizing the scatter plot with correlation annotation.}
-#'
-#' @details The function filters transcripts based on the specified `padj` and `log2FoldChange` thresholds from both the semi-extractability and OOPS assays. Transcripts meeting these criteria are classified as smOOPs for the given stage. The plot includes color-coded classifications, with dashed lines indicating the log2 fold change thresholds. The Pearson correlation coefficient is also displayed on the plot.
-#'
-#' @examples
-#' # Example usage:
-#' plot_smoops_scatter(semi_data, oops_data, "naive")
-#'
-plot_smoops_scatter <- function(semi_stage.ashr, oops_stage.ashr, stage, max_padj = 0.01, min_lfc = 1) {
-
-  stage_lfc.df <- left_join(data.frame(semi_stage.ashr) %>%
-                            rownames_to_column(var = "gene_id") %>%
-                              dplyr::select(gene_id, padj, log2FoldChange) %>%
-                            dplyr::filter(padj < max_padj & log2FoldChange > 0),
-                            data.frame(oops_stage.ashr) %>%
-                            rownames_to_column(var = "gene_id") %>%
-                              dplyr::select(gene_id, padj, log2FoldChange) %>%
-                            dplyr::filter(padj < max_padj & log2FoldChange > 0),
-                            by = "gene_id", suffix = c("_semi", "_oops")) %>%
-  dplyr::filter(!is.na(log2FoldChange_semi)) %>%
-  dplyr::filter(!is.na(log2FoldChange_oops))
-
-  # Create a new column to classify points
-  stage_lfc.df$classification <- ifelse(
-    stage_lfc.df$padj_semi < max_padj & stage_lfc.df$padj_oops < max_padj &
-    abs(stage_lfc.df$log2FoldChange_semi) > min_lfc & abs(stage_lfc.df$log2FoldChange_oops) > min_lfc,
-    paste0(stage," smOOPs"), "non-smOOPs"
-  )
-
-
-  # Get the number of smOOPs
-  stage_smoops_counts = nrow(stage_lfc.df %>% dplyr::filter(classification == paste0(stage," smOOPs")))
-
-  # Add the count
-
-
-  # Plot
-  stage.base_plot.gg <- ggplot(stage_lfc.df, aes(x = log2FoldChange_semi, y = log2FoldChange_oops, color = classification)) +
-    geom_point(alpha = 0.2, stroke = 1) +
-    geom_hline(yintercept = 1, linetype = "dashed", color = "black") +
-    geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
-    # geom_text_repel(data = subset(stage_lfc.df, log2FoldChange_semi > 4.5 | log2FoldChange_oops > 4.5),
-    #                 aes(label = gene_id), size = 2.5, max.overlaps = 10) +
-    labs(# title = "Naive smOOPS LFC Correlation",
-         x = "Log2 Fold Change (Semi-extractibility vs Control)",
-         y = "Log2 Fold Change (OOPS vs Control)") +
-    theme_cowplot() +
-    # ggtitle("naive lfc corr") +
-    # stat_cor(method = "pearson", label.x = 0.1, label.y = 5, size = 4) +
-    # scale_color_manual(values = c("naive smOOPs" = "#4682B4", "nonsmOOPS" = "grey30"), name = NULL)
-    scale_color_manual(values = c("nPSCs smOOPs" = "#4682B4",
-                                  "pPSCs smOOPs" = "#008080",
-                                  "dPSCs smOOPs" = "#894c89",
-                                  "nonsmOOPs" = "grey30"),
-                       labels = paste0(stage," smOOPs (n = ", stage_smoops_counts, ")")) +
-    theme(axis.text.x = element_text(angle = 0, hjust = 1),
-        legend.title = element_blank())
-    # stat_cor(method = "pearson", label.x = 0.1, label.y = 5, size = 3, aes(group = 1)) # Add Pearson correlation coefficient
-
-  # Add Pearson correlation coefficient separately
-  cor_result <- cor.test(stage_lfc.df$log2FoldChange_semi, stage_lfc.df$log2FoldChange_oops)
-  cor_label <- paste("R =", round(cor_result$estimate, 2), ", p <", format(cor_result$p.value, digits = 2, scientific = TRUE))
-
-  # Combine the base plot and the correlation label
-  stage.final_plot.gg <- stage.base_plot.gg +
-    annotate("text", x = 0.1, y = 5, label = cor_label, size = 3, hjust = 0) +
-    guides(color = guide_legend(override.aes = list(size = 3)))
-
-  return(list(data = stage.final_plot.gg, plot = stage.final_plot.gg))
-
-}
-
-
 #' Create or load a transcript database (TxDb) from a GTF file.
 #'
 #' This function creates a transcript database (TxDb) from a given GTF file if it doesn't already exist, 
@@ -427,8 +342,6 @@ plot_smoops_scatter_label <- function(semi_stage.ashr, oops_stage.ashr, stage,
 
 ```
 
-
-
 ## globaliCLIP
 
 ```{r}
@@ -495,10 +408,7 @@ count_xl_per_gene <- function(xl.gr, genes.gr) {
   
   return(genes.df)
 }
-
 ```
-
-
 
 
 # Data
@@ -523,9 +433,6 @@ Set paths and color scheme for results
 base.results.dir <- "~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/"
 figures.dir <- paste0(base.results.dir, "figures/")
 
-# smoops_colors = c("naive" = "#4682B4", "epi" = "#008080", diff = "#894c89")
-# control_colors = c("naive" = "#4682B433", "epi" = "#00808033", diff = "#894C8933")
-
 smoops_values = c("naive" = "#4682B4", "epi" = "#008080", diff = "#894c89")
 control_values = c("naive" = "#bdcae2", "epi" = "#b1c7c9", diff = "#cdb7d1")
 ```
@@ -534,7 +441,6 @@ control_values = c("naive" = "#bdcae2", "epi" = "#b1c7c9", diff = "#cdb7d1")
 
 ```{r}
 xl.files <- list.files("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/global_iCLIP/20230308_global_iCLIP_TK/bed and bedgraph", "xl.bed.gz", full.names = T)
-# xl.files <- list.files("~/Dropbox (The Francis Crick)/semi_oops_project_v2/V2/global_iCLIP/Naive/", "xl.bed", full.names = T)
 xl.files <- xl.files[str_detect(xl.files, "/Naive|/Epi")]
 ```
 
@@ -677,7 +583,6 @@ sig_res_oops_diff_vs_control_diff.df <- data.frame(oops_diff.ashr) %>%
 
 ```
 
-
 Save files:
 
 ```{r}
@@ -727,7 +632,6 @@ diff_smoops.df <- left_join(sig_res_semi_diff_vs_control_diff.df %>%
                             by = "gene_id", suffix = c("_semi", "_oops"))
 ```
 
-
 ## Figure S1C: Stage-specific Venn diagrams
 
 -nPSCs (naive pluripotent stem cells)
@@ -751,7 +655,6 @@ venn.gg <- plot_grid(naive.venn.gg, epi.venn.gg, diff.venn.gg, ncol = 1)
 
 # ggsave(paste0(figures.dir, "figure_1/smoops_venn.pdf"), venn.gg, dpi = 300, height = 12, width = 4)
 ```
-
 
 Save files:
 
@@ -791,19 +694,6 @@ upset(as.data.frame(binary_matrix),
 
 ## Figure 1B: LFC scatter plots
 
-```{r}
-# naive_scatter <- plot_smoops_scatter(semi_naive.ashr, oops_naive.ashr, stage = "nPSCs", max_padj, min_lfc)
-# epi_scatter <- plot_smoops_scatter(semi_epi.ashr, oops_epi.ashr, stage = "pPSCs", max_padj, min_lfc)
-# diff_scatter <- plot_smoops_scatter(semi_diff.ashr, oops_diff.ashr, stage = "dPSCs", max_padj, min_lfc)
-# 
-# corr.gg <- cowplot::plot_grid(naive_scatter$plot + ylim(0, 6) + xlim(0, 4)
-#                               , epi_scatter$plot + ylim(0, 6) + xlim(0, 4), 
-#                               diff_scatter$plot + ylim(0, 6) + xlim(0, 4),
-#                    ncol = 1)
-
-# ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation_same_axis.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
-```
-
 Create gene name to id mapping so we can label genes of interest
 
 ```{r}
@@ -813,9 +703,7 @@ gene_mapping.df <- fread(paste0(base.results.dir, "deseq2_smoops/salmon_count_ta
 goi_mapping.df <- gene_mapping.df %>%
   dplyr::filter(gene_name %in% c("Neat1", "Dync1h1", "Peg3"))
 
-
 # plot_smoops_scatter_label
-
 naive_scatter <- plot_smoops_scatter_label(semi_naive.ashr, oops_naive.ashr, stage = "nPSCs", max_padj, min_lfc, goi_mapping.df)
 epi_scatter <- plot_smoops_scatter_label(semi_epi.ashr, oops_epi.ashr, stage = "pPSCs", max_padj, min_lfc, goi_mapping.df)
 diff_scatter <- plot_smoops_scatter_label(semi_diff.ashr, oops_diff.ashr, stage = "dPSCs", max_padj, min_lfc, goi_mapping.df)
@@ -826,17 +714,10 @@ corr.gg <- cowplot::plot_grid(naive_scatter$plot + ylim(0, 6) + xlim(0, 4),
                    ncol = 1)
 
 # ggsave(paste0(figures.dir, "figure_1/smoops_lfc_correlation_same_axis_labelled.pdf"), corr.gg, dpi = 300, height = 16, width = 7)
-
 ```
 
 
 # Basic features of smOOPs (compared to non-smOOPs)
-
-Load mastertable to extract transcripts
-
-```{r}
-# master.df <- fread(paste0(base.results.dir, "Master Dataset/all_smOOPS_and_controls_V2.tsv"))
-```
 
 Extract feature lengths
 
@@ -889,29 +770,6 @@ both.txlength.long.df <- both.txlength.long.df %>%
 
 both.txlength.long.df$feature_type <- factor(both.txlength.long.df$feature_type, levels = c("transcript", "5'UTR", "CDS", "3'UTR"))
 both.txlength.long.df$group <- factor(both.txlength.long.df$group, levels = c("non-smOOPs", "nPSCs smOOPs", "pPSCs smOOPs", "dPSCs smOOPs"))
-
-# # Plot
-# both.txlength.long.gg <- ggplot(both.txlength.long.df %>% dplyr::filter(length >= 1), aes(x = group, y = length)) +
-#   geom_violin(aes(fill = group, colour = group)) +
-#   geom_boxplot(width = 0.15, alpha = 0.5) +
-#   scale_color_manual(values = c("nPSCs smOOPs" = "#4682B4",
-#                                   "pPSCs smOOPs" = "#008080",
-#                                   "dPSCs smOOPs" = "#894c89",
-#                                   "non-smOOPs" = "grey70")) +
-#   scale_fill_manual(values = c("nPSCs smOOPs" = "#4682B4",
-#                                   "pPSCs smOOPs" = "#008080",
-#                                   "dPSCs smOOPs" = "#894c89",
-#                                   "non-smOOPs" = "grey70")) +
-#   #scale_color_manual(values = c(smoops_colors, "control" = "grey70")) +
-#   #scale_fill_manual(values = c(smoops_colors, "control" = "grey70")) +
-#   scale_y_log10() +
-#   # annotation_logticks(sides = "l") +
-#   theme(axis.text.x = element_text(angle = 60, hjust = 1), axis.title.x = element_blank(),
-#         legend.title = element_blank()) +
-#   facet_grid(~feature_type, space = "free")
-
-# ggsave(paste0(figures.dir, "figure_1/smoops_vs_nonsmoops_lengths.pdf"), both.txlength.long.gg, dpi = 300, width = 8, height = 8)
-
 ```
 
 Only total length:
@@ -941,7 +799,6 @@ ggsave(paste0(figures.dir, "figure_1/smoops_vs_nonsmoops_lengths_tx.pdf"), both.
 
 
 ## Figure 1D: Annotation of smOOPs
-
 
 Annotate smOOPs
 
@@ -1351,7 +1208,6 @@ naive.cpm.df <- xl.df %>%
          cpm_2 = xl_naive_2 *10^6/ total.xl.df[total.xl.df$sample == "Naive_G9_2",]$total_xl,
          cpm_3 = xl_naive_3 *10^6/ total.xl.df[total.xl.df$sample == "Naive_G9_3",]$total_xl)
 ```
-
 
 Add len to table - use the merged exons - gene length, and keep only expressed genes (input for DESeq2)
 
