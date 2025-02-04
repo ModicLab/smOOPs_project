@@ -1,3 +1,3 @@
-# smOOPS_project
+# smOOPs_project
 
-This repo contains code for our manuscript "Integrative analysis of higher-order transcriptome organisation and RNA condensation principles".
+This repo contains code for the manuscript titled "Integrative profiling of condensation-prone RNAs during early development".
