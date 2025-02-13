@@ -1,0 +1,365 @@
+---
+title: "HCR-FISH-data-analysis"
+author: "Tajda Klobučar"
+date: "2025-02-10"
+output: html_document
+---
+
+#### Libraries
+
+```{r include=FALSE, warning=FALSE}
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tidyr))
+suppressPackageStartupMessages(library(superb))
+suppressPackageStartupMessages(library(readxl))
+
+```
+## Imported all quantifications (number of foci, their size and intensity) from .csv obtained from FIJI analysis. One file was generated per well imaged (A1, A2_0 to A2_6), all of them containing probes against three different transcripts labeled with 3 different fluorophores (488, 594 or 647). These files were generated using macros and raw image files available on Zenodo (10.5281/zenodo.13860869).
+
+## First merge them by fluorophores and group - smOOPS or non-smOOPs (also reffered here as control).
+## Calculate Total intensity values (mean*area).
+
+## Load the data. 
+
+```{r include=FALSE}
+WellA1_488 <- read_excel("WellA1_488.xlsx")
+WellA1_640 <- read_excel("WellA1_640.xlsx")
+WellA1_561 <- read_excel("wellA1_A1_561.xlsx")
+WellA2_0_488 <- read_excel("WellA2_0_488.xlsx")
+WellA2_0_640 <- read_excel("WellA2_0_640.xlsx")
+WellA2_5_488 <- read_excel("WellA2_5_488.xlsx")
+WellA2_6_488 <- read_excel("WellA2_6_488.xlsx")
+WellA2_0_561 <- read_excel("wellA2_0_561.xlsx")
+WellA2_5_561 <- read_excel("wellA2_5_561.xlsx")
+WellA2_6_561 <- read_excel("wellA2_6_561.xlsx")
+WellA2_5_640 <- read_excel("WellA2_5_640.xlsx")
+WellA2_6_640 <- read_excel("WellA2_6_640.xlsx")
+
+WellA2_3_488 <- read_excel("WellA2_3_488.xlsx")
+WellA2_4_488 <- read_excel("WellA2_4_488.xlsx")
+WellA2_3_561 <- read_excel("wellA2_3_561.xlsx")
+WellA2_4_561 <- read_excel("wellA2_4_561.xlsx")
+WellA2_4_640 <- read_excel("WellA2_4_640.xlsx")
+
+# And load data with gene_name and gene_id with expression values also. 
+targets_info <- read_excel("C:/Users/tajdak/UK Dementia Research Institute Dropbox/Tajda Klobucar_DRI/KI/Protocols/Semi_oops project/HCR_FISH design/IJS_imaging/july_2024/Particle_analysis/targets_info.xlsx")
+
+```
+
+## First merge them by fluorophores and group - smOOPS or non-smOOPs (also reffered here as control).
+## Calculate Total intensity values (mean*area).
+
+```{r}
+smoops_all_green <- rbind(WellA1_488, WellA2_0_488, WellA2_5_488, WellA2_6_488)
+smoops_all_green$Total <- smoops_all_green$Area * smoops_all_green$Mean
+smoops_all_yellow <-rbind(WellA1_561, WellA2_0_561, WellA2_5_561, WellA2_6_561)
+smoops_all_yellow$Total <- smoops_all_yellow$Area * smoops_all_yellow$Mean
+smoops_all_magenta <- rbind(WellA1_640, WellA2_0_640, WellA2_5_640, WellA2_6_640)
+smoops_all_magenta$Total <- smoops_all_magenta$Area * smoops_all_magenta$Mean
+
+
+ctrl_all_green <- rbind(WellA2_3_488, WellA2_4_488)
+ctrl_all_green$Total <- ctrl_all_green$Area * ctrl_all_green$Mean
+
+ctrl_all_yellow <- rbind(WellA2_3_561, WellA2_4_561)
+ctrl_all_yellow$Total <- ctrl_all_yellow$Area * ctrl_all_yellow$Mean
+
+ctrl_all_magenta <- rbind(WellA2_4_640)
+ctrl_all_magenta$Total <- ctrl_all_magenta$Area * ctrl_all_magenta$Mean
+
+```
+
+## Normalising values to control of each color; to be able to compare values from different fluorophores used.
+
+## First, calculating the average value of Total intensity for non-smOOPs in each fluorphore used.
+```{r}
+mean_ctrl_green <- mean(ctrl_all_green$Total)
+mean_ctrl_yellow <- mean(ctrl_all_yellow$Total)
+mean_ctrl_magenta <- mean(ctrl_all_magenta$Total)
+
+
+smoops_all_green$Total_on_av <- smoops_all_green$Total/mean_ctrl_green
+smoops_all_yellow$Total_on_av <- smoops_all_yellow$Total/mean_ctrl_yellow
+smoops_all_magenta$Total_on_av <- smoops_all_magenta$Total/mean_ctrl_magenta
+
+ctrl_all_green$Total_on_av <- ctrl_all_green$Total/mean_ctrl_green
+ctrl_all_yellow$Total_on_av <- ctrl_all_yellow$Total/mean_ctrl_yellow
+ctrl_all_magenta$Total_on_av <- ctrl_all_magenta$Total/mean_ctrl_magenta
+
+```
+
+
+## Merging the data in a single dataframe. 
+```{r warning=FALSE}
+
+# Calculate control means for each color
+mean_ctrl_green <- mean(ctrl_all_green$Total, na.rm = TRUE)
+mean_ctrl_yellow <- mean(ctrl_all_yellow$Total, na.rm = TRUE)
+mean_ctrl_magenta <- mean(ctrl_all_magenta$Total, na.rm = TRUE)
+
+# Define a function to process datasets correctly
+process_well <- function(df, well_name, group_name, ctrl_mean) {
+  df <- df %>%
+    mutate(Total = Area * Mean) %>%  # Step 1: Calculate Total
+    summarise(
+      across(everything(), \(x) mean(x, na.rm = TRUE)),  # Step 2: Compute means
+      Total_on_av = mean(Total, na.rm = TRUE) / ctrl_mean  # Step 3: Normalize Total
+    ) %>%
+    mutate(
+      Well = well_name,
+      Group = group_name
+    )
+  return(df)
+}
+
+
+# Compute summaries for each dataset
+summary_list <- list(
+  # Smoops (Green)
+  process_well(WellA1_488, "WellA1_488", "smoops", mean_ctrl_green),
+  process_well(WellA2_0_488, "WellA2_0_488", "smoops", mean_ctrl_green),
+  process_well(WellA2_5_488, "WellA2_5_488", "smoops", mean_ctrl_green),
+  process_well(WellA2_6_488, "WellA2_6_488", "smoops", mean_ctrl_green),
+  
+  # Smoops (Yellow)
+  process_well(WellA1_561, "WellA1_561", "smoops", mean_ctrl_yellow),
+  process_well(WellA2_0_561, "WellA2_0_561", "smoops", mean_ctrl_yellow),
+  process_well(WellA2_5_561, "WellA2_5_561", "smoops", mean_ctrl_yellow),
+  process_well(WellA2_6_561, "WellA2_6_561", "smoops", mean_ctrl_yellow),
+  
+  # Smoops (Magenta)
+  process_well(WellA1_640, "WellA1_640", "smoops", mean_ctrl_magenta),
+  process_well(WellA2_0_640, "WellA2_0_640", "smoops", mean_ctrl_magenta),
+  process_well(WellA2_5_640, "WellA2_5_640", "smoops", mean_ctrl_magenta),
+  process_well(WellA2_6_640, "WellA2_6_640", "smoops", mean_ctrl_magenta),
+  
+  # Control (Green)
+  process_well(WellA2_3_488, "WellA2_3_488", "ctrl", mean_ctrl_green),
+  process_well(WellA2_4_488, "WellA2_4_488", "ctrl", mean_ctrl_green),
+  
+  # Control (Yellow)
+  process_well(WellA2_3_561, "WellA2_3_561", "ctrl", mean_ctrl_yellow),
+  process_well(WellA2_4_561, "WellA2_4_561", "ctrl", mean_ctrl_yellow),
+  
+  # Control (Magenta)
+  process_well(WellA2_4_640, "WellA2_4_640", "ctrl", mean_ctrl_magenta)
+)
+
+
+
+# Combine all summarized data into one dataframe
+final_df <- bind_rows(summary_list)
+
+# Remove the first two columns and replace them with 'Well' and 'Group'
+final_df <- final_df %>%
+  select(-c(1, 2)) %>%  # Remove the first two columns
+  select('Well', 'Group', everything())  # Add 'Well' and 'Group' at the beginning
+
+
+# Add gene name and gene_id (inserting the gene names of targets used in each well and fluorophore). 
+# At the same time, added the values of expression (TPM) in semi-extractability library. 
+
+final_df <- final_df %>%
+  left_join(targets_info %>% select(Well, gene_id, gene_name, semi_naive), by = c("Well" = "Well"))
+
+```
+
+## Figure 1H 
+## Plot the distribution of foci size (area in squared microns)
+
+```{r}
+
+t.test(final_df$Area ~ final_df$Group)
+
+ggplot(final_df, aes(x = Group, y = Area, fill = Group)) +
+  geom_boxplot() +
+  geom_jitter() +
+  scale_fill_manual(values = c("#bdcae2", "#4682B4")) + 
+  showSignificance( c(1,2), 0.4, -0.02, "**") +
+  labs(
+    title = "Area size of foci for smOOPS (n=12) and non-smOOPs (n=5)",
+    x = NULL,
+    y = "Foci size (Area, um2) "
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    title = element_text(size = 15)
+  )
+
+```
+
+
+## To determine the fraction of the signal that is nuclear, I used another macro on all the images, which generated a nuclear mask (based on DAPI channel) and measured the intensity of foci within the nuclear mask and the whole frame of acquisition.
+
+## By summing the foci intensity in nucleus and the whole frame, the nuclear fraction was calculated as the ratio between nuclear signal and the whole frame signal.
+
+```{r include=FALSE, warning=FALSE}
+
+# Define the folder path
+folder_path <- "C:/Users/tajdak/UK Dementia Research Institute Dropbox/Tajda Klobucar_DRI/KI/Protocols/Semi_oops project/HCR_FISH design/IJS_imaging/july_2024/Particle_analysis"
+
+# Define file pairs
+file_pairs <- list(
+  c("Nuc_well_A1_488.xlsx", "Frame_well_A1_488.xlsx"),
+  c("Nuc_well_A2_0_488.xlsx", "Frame_well_A2_0_488.xlsx"),
+  c("Nuc_well_A2_5_488.xlsx", "Frame_well_A2_5_488.xlsx"),
+  c("Nuc_well_A2_6_488.xlsx", "Frame_well_A2_6_488.xlsx"),
+  c("Nuc_well_A1_561.xlsx", "Frame_well_A1_561.xlsx"),
+  c("Nuc_well_A2_0_561.xlsx", "Frame_well_A2_0_561.xlsx"),
+  c("Nuc_well_A2_5_561.xlsx", "Frame_well_A2_5_561.xlsx"),
+  c("Nuc_well_A2_6_561.xlsx", "Frame_well_A2_6_561.xlsx"),
+  c("Nuc_well_A1_640.xlsx", "Frame_well_A1_640.xlsx"),
+  c("Nuc_well_A2_0_640.xlsx", "Frame_well_A2_0_640.xlsx"),
+  c("Nuc_well_A2_5_640.xlsx", "Frame_well_A2_5_640.xlsx"),
+  c("Nuc_well_A2_6_640.xlsx", "Frame_well_A2_6_640.xlsx"),
+  c("Nuc_well_A2_3_488.xlsx", "Frame_well_A2_3_488.xlsx"),
+  c("Nuc_well_A2_4_488.xlsx", "Frame_well_A2_4_488.xlsx"),
+  c("Nuc_well_A2_3_561.xlsx", "Frame_well_A2_3_561.xlsx"),
+  c("Nuc_well_A2_4_561.xlsx", "Frame_well_A2_4_561.xlsx"),
+  c("Nuc_well_A2_4_640.xlsx", "Frame_well_A2_4_640.xlsx")
+)
+
+# Initialize an empty data frame to store results
+ratios_df <- data.frame(Well = character(), Ratio = numeric(), stringsAsFactors = FALSE)
+
+# Load all Nucleus and Frame data into lists and calculate ratios
+for (pair in file_pairs) {
+  
+  # Define file paths
+  nuc_file <- file.path(folder_path, pair[1])
+  frame_file <- file.path(folder_path, pair[2])
+
+  # Read data from the files
+  nuc_data <- read_excel(nuc_file)
+  frame_data <- read_excel(frame_file)
+  
+  # Convert Area and Mean columns to numeric (in case they are read as characters)
+  nuc_data$Area <- as.numeric(nuc_data$Area)
+  nuc_data$Mean <- as.numeric(nuc_data$Mean)
+  frame_data$Area <- as.numeric(frame_data$Area)
+  frame_data$Mean <- as.numeric(frame_data$Mean)
+
+  # Calculate the "Total" column for both files
+  nuc_data$Total <- nuc_data$Area * nuc_data$Mean
+  frame_data$Total <- frame_data$Area * frame_data$Mean
+
+  # Sum "Total" values
+  nuc_total <- sum(nuc_data$Total, na.rm = TRUE)
+  frame_total <- sum(frame_data$Total, na.rm = TRUE)
+
+  # Avoid division by zero
+  if (frame_total == 0) {
+    warning(paste("Frame total is zero for", frame_file, "- returning NA"))
+    ratio_value <- NA
+  } else {
+    # Calculate the ratio
+    ratio_value <- nuc_total / frame_total
+  }
+
+  # Use the full filename (nuc_file) as the well name
+  well_name <- basename(nuc_file)  # Extract filename from the full path
+
+  # Append the ratio and well name to the results data frame
+  ratios_df <- rbind(ratios_df, data.frame(Well = well_name, Ratio_nuc = ratio_value))
+}
+
+# View the final data frame with Well names and Ratios
+print(ratios_df)
+
+# Adjust well names to match final_df
+ratios_df$Well <- gsub("^Nuc_well_A", "WellA", ratios_df$Well)  # Replace 'Nuc_' with 'Well_'
+ratios_df$Well <- gsub(".xlsx$", "", ratios_df$Well)  
+
+# Append this to final_df dataframe
+
+final_df <- final_df %>%
+  left_join(ratios_df %>% select(Well, Ratio_nuc), by = c("Well" = "Well"))
+
+
+```
+
+## Figure S1F
+## Plot the expression of all targeted transcripts (obtained from semi-extractability assay, TPM)
+
+```{r}
+
+t.test(final_df$semi_naive ~ final_df$Group)
+
+ggplot(final_df, aes(x = Group, y = semi_naive, fill = Group)) +
+  geom_boxplot() +
+  geom_jitter() +
+  scale_fill_manual(values = c("#bdcae2", "#4682B4")) + 
+  labs(
+    title = "Expression in semi library of smOOPS (n=12) and non-smOOPs (n=5)",
+    x = NULL,
+    y = "Expression (TPM)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    title = element_text(size = 15)
+  )
+
+```
+
+
+## Figure S1G 
+## (left) Plot total intensity (log2 transformed) for all targeted transcripts
+## (right) Plot the fraction of nuclear signal (on average for each targeted transcript)
+
+```{r}
+# Figure S1G (left)
+
+
+t.test(final_df$Total_on_av ~ final_df$Group)
+
+ggplot(final_df, aes(x = Group, y = Total_on_av, fill = Group)) +
+  geom_boxplot() +
+  geom_jitter() +
+  scale_fill_manual(values = c("#bdcae2", "#4682B4")) + 
+  scale_y_continuous(trans = "log2") +
+  showSignificance( c(1,2), 7, -0.5, "*") +
+  labs(
+    title = "Total intensity of smOOPs (n=12) and non-smOOPs (n=5)",
+    x = NULL,
+    y = "log2(Total intensity)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    title = element_text(size = 15)
+  )
+
+# Figure S1G (right)
+
+ggplot(final_df, aes(x = Group, y = Ratio_nuc, fill = Group)) +
+  geom_boxplot() +
+  geom_jitter() +
+  scale_fill_manual(values = c("#bdcae2", "#4682B4")) + 
+  labs(
+    title = "Nuclear fraction of foci smOOPS (n=12) and control (n=5)",
+    x = NULL,
+    y = "Fraction of nuclear signal"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 15),
+    axis.title = element_text(size = 15),
+    legend.text = element_text(size = 15),
+    legend.title = element_text(size = 15),
+    title = element_text(size = 15)
+  )
+
+```
+
