@@ -14,21 +14,21 @@ def validate_config_and_data(config):
     Validate the input data and custom variables to make sure the file exists, that the input columns exist, that the sequences and groups are in the right format, 
     that all other custom variables are the right type and that sequences are not too long and there are not too many different groups.
     """
-    # Ensure 'full_file' is defined in custom_config
+
     if 'full_file' not in config:
         raise ValueError("'full_file' must be defined in the custom configuration.")
     
-    # Load the dataset to perform checks
+
     try:
         data = pd.read_csv(config['full_file'], sep=config['sep'])
     except Exception as e:
         raise ValueError(f"Failed to load the data file {config['full_file']}: {e}")
     
-    # Check if the required columns are present
+
     if not config['group_column_name']:
         raise ValueError("The 'group_column_name' must be defined in the custom configuration.")
     
-    # Check the group column for less than 10 unique values
+
     if data[config['group_column_name']].nunique() >= 10:
         raise ValueError(f"The group column '{config['group_column_name']}' must have less than 10 unique values.")
         
@@ -41,11 +41,11 @@ def validate_config_and_data(config):
     if len(missing_columns) > 0:
         raise ValueError(f"The following required columns are missing from the data file: {', '.join(missing_columns)}. Please check the column names or the separator and try again.")
 
-    # Check the sequence column for valid nucleotide strings
+
     if config['sequence_column_name']:
         if not data[config['sequence_column_name']].apply(lambda x: isinstance(x, str) and all(c in 'ATCGN' for c in x)).all():
             raise ValueError(f"The sequence column '{config['sequence_column_name']}' contains invalid nucleotide strings.")
-        # Check for the length of the longest sequence
+
         max_sequence_length = data[config['sequence_column_name']].str.len().max()
         print(f"The longest sequence is {max_sequence_length} nucleotides long.")
         if max_sequence_length >= 100000:
@@ -58,17 +58,17 @@ def validate_config_and_data(config):
         for col in config['signal_column_name']:
             length_of_first_item = data[col].str.split(',').apply(len)
             lengths_of_first_item.append(length_of_first_item)
-            # Regular expression pattern to match a string of comma-separated numbers
+
             pattern = re.compile(r'^(\d+(\.\d+)?)(,\d+(\.\d+)?)*$')
 
-            # Check the column for valid comma-separated numbers
+
             if not data[col].apply(lambda x: isinstance(x, str) and bool(pattern.match(x.strip()))).all():
                 raise ValueError(f"The column '{col}' contains invalid comma-separated numbers.")
             
         if not all(all(series[i] == lengths_of_first_item[0][i] for series in lengths_of_first_item) for i in range(len(lengths_of_first_item[0]))):
             raise ValueError("The signal columns must have the same number of values.")
 
-    # If all checks pass, print a success message
+
     print("Data has been successfully loaded and validated. All necessary columns are present, and data is in the expected format.")
     
 
@@ -139,7 +139,7 @@ def import_config(directory_name):
     config_file_path = os.path.join(directory_name, 'config.json')
     alternative_config_file_path = os.path.join(directory_name, 'optimal_config.json')
 
-    # Check which file exists and select it
+
     if os.path.exists(config_file_path):
         file_to_open = config_file_path
     elif os.path.exists(alternative_config_file_path):
@@ -147,7 +147,7 @@ def import_config(directory_name):
     else:
         raise FileNotFoundError("Neither config.json nor optimal_config.json was found.")
     
-    # Now open and load the configuration from the selected file
+
     with open(file_to_open) as f:
         config = json.load(f)
         
