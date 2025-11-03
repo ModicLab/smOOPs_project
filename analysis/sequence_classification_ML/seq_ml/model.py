@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 
-# Import specific functions or classes from other modules
 from .utils import create_out_dirs_for_optimisation, save_config
 from .preprocess import prepare_the_necessary_directories_and_raw_files, prepare_the_data_for_training, get_shapes_of_inputs, dataset_to_numpy
 
-# Import external libraries
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # Don't show TF debug info while training
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import sys
 import warnings
 import numpy as np
@@ -84,13 +82,10 @@ def build_model(config, input_shape, output_shape):
     
     return model
 
-# Validate the model size to make sure the memory usage does not excede the gpu vram limit. This is very much an estimation and should not be treated as a fact.
 def estimate_model_memory_usage_from_layers(config, input_shape, output_shape):
     
-    # Assuming float32 uses 4 bytes
     bytes_per_param = 4
     
-    # Calculate input size assuming batch size of 1
     input_size = np.prod(input_shape) * bytes_per_param
     
     total_memory = 0  # Start with input size
@@ -103,49 +98,39 @@ def estimate_model_memory_usage_from_layers(config, input_shape, output_shape):
         kernel_size = config['kernel_size'] * (config['Increase_Kernel_By'] ** block)
         output_shape = (current_shape[0], filters)
         
-        # Memory for parameters in the Conv1D layer (kernel + bias)
         num_params = filters * current_shape[1] * kernel_size + filters
         total_memory += num_params * bytes_per_param
         
-        # Memory for output of this layer (feature map)
         output_size = np.prod(output_shape) * bytes_per_param
         total_memory += output_size
         
-        # Update current shape for next layer calculations
         current_shape = output_shape
     
-    # Additional LSTM and Dense layers calculations here
-    # LSTM parameters
     lstm_units = config['LSTM_units']
     num_lstm_params = 4 * (lstm_units * current_shape[1] + lstm_units * lstm_units + lstm_units)
     total_memory += num_lstm_params * bytes_per_param
     
-    # Output from LSTM (assuming concatenation does not increase size)
     lstm_output_shape = (lstm_units,)
     lstm_output_size = np.prod(lstm_output_shape) * bytes_per_param
     total_memory += lstm_output_size
     
-    # Dense layers
     for i in range(2):
         dense_units = config['Dense_units'] // (2 ** i)
         num_dense_params = dense_units * np.prod(lstm_output_shape) + dense_units
         total_memory += num_dense_params * bytes_per_param
         
-        # Update output shape
         lstm_output_shape = (dense_units,)
     
-    # Final output layer
     num_output_params = output_shape[1] * np.prod(lstm_output_shape) + output_shape[1]
     total_memory += num_output_params * bytes_per_param
 
-    total_memory_mb = total_memory / (1024 ** 2)  # Convert to MB
+    total_memory_mb = total_memory / (1024 ** 2)
 
     print("Memory usage estimated.")
-    return total_memory_mb, total_memory_mb / 1024  # MB and GB
+    return total_memory_mb, total_memory_mb / 1024 
 
 def validate_memory_usage_before_building_the_model(config, features_shape, labels_shape):
 
-    # Estimate memory usage and dynamically decide the unit for display
     memory_usage_mb, memory_usage_gb = estimate_model_memory_usage_from_layers(config, features_shape, labels_shape)
     if memory_usage_mb > 1024:  # More than 1 GB
         print(f"Estimated memory usage for a batch: {memory_usage_gb:.2f} GB")
@@ -178,7 +163,6 @@ def train_the_model(config, training_dataset, validation_dataset, training_steps
     
     optimizer = Adam(learning_rate=config['learning_rate'])
 
-    # Compile the model
     model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=[tf.keras.metrics.AUC(name='auc'), 'accuracy'])
     
     if not config['OPTIMISE']:
@@ -186,12 +170,10 @@ def train_the_model(config, training_dataset, validation_dataset, training_steps
         
     validate_parameter_number(model)
     
-    # Early stopping for both training and validation losses
     early_stopping = EarlyStopping(monitor='val_auc', patience=config['patience'], restore_best_weights=True)    
     
     verbose = 0 if config['OPTIMISE'] else 1
 
-    # Use this dictionary in the fit method
     history = model.fit(training_dataset,
                         epochs=config['epochs'],
                         verbose=verbose,
@@ -208,7 +190,7 @@ def predict_validation_dataset(model, X_val, y_val, batch_size):
     Predict the validation dataset.
     """
     y_pred = np.vstack([model.predict(X_val[i:i + batch_size]) for i in range(0, len(X_val), batch_size)])
-    # Get the predicted classes
+
     y_pred_classes = np.argmax(y_pred, axis=1)
     y_val_classes = np.argmax(y_val, axis=1)
     return y_pred, y_pred_classes, y_val_classes
@@ -218,12 +200,12 @@ def auroc_score(y_val, y_pred, average='standard'):
     Calculate ROC AUC for each class.
     """
     auc_scores = []
-    for i in range(y_val.shape[1]):  # iterate over each class
-        # Compute ROC AUC for the i-th class
+    for i in range(y_val.shape[1]):
+
         auc = roc_auc_score(y_val[:, i], y_pred[:, i])
         auc_scores.append(auc)
     if average == 'weighted':
-        # Optionally, calculate a weighted average AUROC if classes are imbalanced
+
         weights = y_val.mean(axis=0)
         weighted_average_auc = np.average(auc_scores, weights=weights)
         return weighted_average_auc
@@ -249,10 +231,10 @@ def save_confusion_matrix(y_val_classes, y_pred_classes, directory_name, categor
     """
     Plot and save the confusion matrix.
     """
-    # Assume y_val_classes and y_pred_classes are defined elsewhere
+
     cm = confusion_matrix(y_val_classes, y_pred_classes)
 
-    # Normalize the confusion matrix
+
     cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
     plt.figure(figsize=(7, 7))
@@ -260,8 +242,8 @@ def save_confusion_matrix(y_val_classes, y_pred_classes, directory_name, categor
     plt.xlabel('Predicted')
     plt.ylabel('True')
     plt.title('Confusion Matrix in Percentages')
-    plt.savefig(os.path.join(directory_name, "confusion_matrix_validation_dataset.png"))  # Save the plot as PNG
-    plt.close()  # Close the plot
+    plt.savefig(os.path.join(directory_name, "confusion_matrix_validation_dataset.png")) 
+
 
 def save_training_curves(history, directory_name):
     """
@@ -274,10 +256,8 @@ def save_training_curves(history, directory_name):
     train_accuracy = history.history['accuracy']
     val_accuracy = history.history['val_accuracy']
 
-    # Create a figure with two subplots for loss and accuracy
     fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, ncols=1, figsize=(10, 16))
 
-    # Plot the loss curves on the first subplot
     ax1.plot(train_loss, label='Training Loss')
     ax1.plot(val_loss, label='Validation Loss')
     ax1.set_title('Training and Validation Loss')
@@ -285,7 +265,6 @@ def save_training_curves(history, directory_name):
     ax1.set_ylabel('Loss')
     ax1.legend()
 
-    # Plot the accuracy curves on the second subplot
     ax2.plot(train_auc, label='Training AUC')
     ax2.plot(val_auc, label='Validation AUC')
     ax2.set_title('Training and Validation AUC')
@@ -293,7 +272,6 @@ def save_training_curves(history, directory_name):
     ax2.set_ylabel('AUC')
     ax2.legend()
     
-    # Plot the accuracy curves on the second subplot
     ax3.plot(train_accuracy, label='Training Accuracy')
     ax3.plot(val_accuracy, label='Validation Accuracy')
     ax3.set_title('Training and Validation Accuracy')
@@ -301,27 +279,23 @@ def save_training_curves(history, directory_name):
     ax3.set_ylabel('Accuracy')
     ax3.legend()
 
-    # Save the figure containing both subplots
     plt.savefig(os.path.join(directory_name, "training_validation_curves.png"))
-    plt.close(fig)  # Close the figure to free up memory
-
-
-# Functions to save the model, configuration files, model summary, weights and architecture, and hyperparameters.
+    plt.close(fig)
 
 def save_training_history(history, directory_name):
     with open(os.path.join(directory_name, "training_history.json"), "w") as f:
-        # Convert possible NumPy types in the history to native Python types
+
         history_dict = {k: [float(val) for val in v] for k, v in history.history.items()}
         json.dump(history_dict, f, indent=4)
 
 
 def save_model_summary(model, directory_name):
     with open(os.path.join(directory_name, "model_summary.txt"), "w") as f:
-        # Redirect the default standard output to the file
-        original_stdout = sys.stdout  # Save the original standard output
-        sys.stdout = f  # Redirect to the file
-        model.summary()  # This will write to the file instead of the console
-        sys.stdout = original_stdout  # Reset standard output to its original value
+
+        original_stdout = sys.stdout  
+        sys.stdout = f  
+        model.summary()  
+        sys.stdout = original_stdout 
 
 
 def save_weights_and_architecture(model, directory_name):
@@ -362,42 +336,32 @@ def save_optimization_details(details, directory_name, config):
             f.write(f"Trial {entry['trial_number']}: Value: {entry['value']}, Parameters: {entry['params']}\n")  
             
 def plot_optimization_history(directory_name, config):
-    # File path to the optimization history
     file_path = os.path.join(directory_name, 'optimization_history.txt')
 
-    # Read the file content
     with open(file_path, 'r') as file:
         data = file.read()
 
-    # Extracting the values using regex
     values = [float(x) for x in re.findall(r'Value: ([\d\.\-]+)', data)]
 
-    # Create a DataFrame
     df = pd.DataFrame({'Trial': range(len(values)), 'Value': values})
 
-    # Filter out the -1 values for the rolling average calculation
     df_filtered = df[df['Value'] != -1]
 
-    # Calculate the rolling average with a window of 5
     df_filtered['Rolling_Avg'] = df_filtered['Value'].rolling(window=10, min_periods=1).mean()
 
-    # Finding the maximum value and its index
     max_value = df_filtered['Value'].max()
     max_index = df_filtered['Trial'][df_filtered['Value'].idxmax()]
 
     plt.figure(figsize=(14, 4))
 
-    # Plotting the training progression as points
     plt.plot(df['Trial'], df['Value'], marker='.', linestyle='', alpha=1, color='royalblue', label='Individual Trials')
 
-    # Plotting the smoothed average with lower alpha
     plt.plot(df_filtered['Trial'], df_filtered['Rolling_Avg'], linestyle='--', color='red', alpha=1,  label='Smoothed Average (5 points)', linewidth=1)
 
     plt.xlabel('Trial', fontsize=14)
     plt.ylabel('AUC Score', fontsize=14)
     plt.title('Optimisation Progression', fontsize=16)
 
-    # Labeling the maximum value
     plt.annotate(f'Max AUC Score: {max_value}', xy=(max_index, max_value), xytext=(max_index, max_value + 0.05),
                 arrowprops=dict(facecolor='red', shrink=0.05, width=3, headwidth=8))
 
@@ -406,7 +370,6 @@ def plot_optimization_history(directory_name, config):
     plt.savefig(os.path.join(directory_name, "optimisation_progression.png"))
 
 def save_optimisation(directory_name, study, config):
-    # Now, save the optimization history and best parameters
     optimization_details = {
         'best_params': study.best_params,
         'best_value': study.best_value,
@@ -420,18 +383,14 @@ def evaluate_and_save_the_model(config, model, history, directory_name, validati
     """
     Evaluate the trained model and save it with its configuration.
     """
-    # create output directory
     model_info_out, model_eval_out, *model_optimise_out  = create_out_dirs_for_optimisation(directory_name, config["OPTIMISE"])
-    # Prepare the validation dataset for evaluation
     X_val, y_val = dataset_to_numpy(validation_dataset, validation_steps)
     
-     # Evaluate the model
     y_pred, y_pred_classes, y_val_classes = predict_validation_dataset(model, X_val, y_val, config['batch_size'])
     save_confusion_matrix(y_val_classes, y_pred_classes, model_eval_out, categories_list)
     save_evaluation_metrics(y_val_classes, y_pred_classes, y_val, y_pred, model_eval_out)
     save_training_curves(history, model_eval_out)   
     
-    # Save the model information
     save_config(config, directory_name)
     save_training_history(history, model_info_out)
     save_model_summary(model, model_info_out)    
@@ -488,21 +447,18 @@ def objective(trial, training_dataset, validation_dataset, training_steps, valid
         
         config_trial = {**config, **config_optuna}
         
-        # Train the model with the trial's hyperparameters
         model, history = train_the_model(config_trial, training_dataset, validation_dataset, training_steps, validation_steps, features_shape, labels_shape)
 
-        # Evaluate the model on the validation set to get the 'true' best performance
-        # Note: This evaluation step is crucial if early stopping might have restored the model to a state from a previous epoch
         val_loss, val_auc, val_accuracy = model.evaluate(validation_dataset, steps=validation_steps)
 
         return val_auc
     
     except Exception as e:
-        # Log the error or handle it as per your needs
+
         print(f"Error during trial: {e}")
-        # print config_trial to see the error
+
         print(config_trial)
-        # Return a very low accuracy value
+
         return -1.0
     
 
@@ -514,7 +470,6 @@ def optimise_with_optuna(config, training_dataset, validation_dataset, training_
     
     study.optimize(lambda trial: objective(trial, training_dataset, validation_dataset, training_steps, validation_steps, features_shape, labels_shape, config), n_trials=config["n_trials"])
 
-    # Use the best hyperparameters
     best_params = study.best_trial.params
     best_value = study.best_trial.value
     print("Best hyperparameters:", best_params)
